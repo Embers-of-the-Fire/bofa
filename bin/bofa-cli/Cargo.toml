@@ -4,10 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-clap = { version = "4.6.1", features = ["derive"] }
+clap = { workspace = true }
 
 [dev-dependencies]
-snapbox = { version = "1.0.0", features = ["cmd"] }
+snapbox = { workspace = true }
 
 [[bin]]
 name = "bofa"
