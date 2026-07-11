@@ -1,0 +1,30 @@
+# Example bofa configuration file.
+# Copy this file to bofa.toml and fill in your credentials.
+# Secrets are referenced as environment variable names prefixed with '$'.
+
+[credentials]
+type = "app"
+app_id = "$APP_ID"
+key_type = "PEM" # or "DER"
+key = "$APP_KEY"
+
+# [credentials]
+# type = "account"
+# username = "$BOFA_USERNAME"
+# password = "$BOFA_PASSWORD"
+
+# [credentials]
+# type = "user_access_token"
+# token = "$BOFA_USER_ACCESS_TOKEN"
+
+# [credentials]
+# type = "personal_token"
+# token = "$BOFA_PERSONAL_TOKEN"
+
+[scanner.sensitive]
+enabled = true
+
+[[scanner.sensitive.item]]
+description = "Example sensitive path group"
+paths = ["/path/to/repo1", "/path/to/repo2"]
+members = ["alice", "bob"]
