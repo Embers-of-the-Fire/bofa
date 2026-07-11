@@ -1,11 +1,13 @@
+pub mod credentials;
 pub mod scanner;
 
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
-#[derive(Debug, Default, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct BofaConfig {
+    pub credentials: credentials::Credentials,
     #[serde(default)]
     pub scanner: scanner::ScannerConfig,
 }

@@ -13,7 +13,11 @@ fn hello_world() {
 #[test]
 fn config_command_prints_config() {
     let path = std::env::temp_dir().join(format!("bofa_test_config_{}.toml", std::process::id()));
-    std::fs::write(&path, "[scanner.sensitive]\nenabled = true\nitem = []\n").unwrap();
+    std::fs::write(
+        &path,
+        "[credentials]\ntype = \"app\"\napp_id = \"$APP_ID\"\nkey_type = \"DER\"\nkey = \"$APP_KEY\"\n\n[scanner.sensitive]\nenabled = true\nitem = []\n",
+    )
+    .unwrap();
 
     let output = StdCommand::new(snapbox::cmd::cargo_bin!("bofa"))
         .arg("--config")
