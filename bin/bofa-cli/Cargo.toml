@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 clap = { workspace = true }
+bofa-lib = { path = "../../lib" }
 
 [dev-dependencies]
 snapbox = { workspace = true }
