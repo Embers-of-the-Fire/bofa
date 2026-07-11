@@ -5,8 +5,17 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
+#[derive(Debug, Clone, PartialEq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Provider {
+    #[default]
+    GitHub,
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct BofaConfig {
+    #[serde(default)]
+    pub provider: Provider,
     pub credentials: credentials::Credentials,
     #[serde(default)]
     pub scanner: scanner::ScannerConfig,

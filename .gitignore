@@ -4,3 +4,6 @@ dist/
 .envrc
 .direnv/
 
+.env
+bofa.dev.toml
+

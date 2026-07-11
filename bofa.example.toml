@@ -2,11 +2,22 @@
 # Copy this file to bofa.toml and fill in your credentials.
 # Secrets are referenced as environment variable names prefixed with '$'.
 
+provider = "github"
+
 [credentials]
 type = "app"
 app_id = "$APP_ID"
-key_type = "PEM" # or "DER"
+# Valid key_type values: "PEM" or "DER".
+key_type = "PEM"
 key = "$APP_KEY"
+installation_id = "$INSTALLATION_ID"
+
+# [credentials]
+# type = "app"
+# app_id = "$APP_ID"
+# key_type = "DER"
+# key = "$APP_KEY"
+# installation_id = "$INSTALLATION_ID"
 
 # [credentials]
 # type = "account"

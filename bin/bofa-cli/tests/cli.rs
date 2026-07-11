@@ -1,14 +1,4 @@
-use snapbox::cmd::Command;
 use std::process::Command as StdCommand;
-
-#[test]
-fn hello_world() {
-    Command::new(snapbox::cmd::cargo_bin!("bofa"))
-        .arg("hello")
-        .assert()
-        .success()
-        .stdout_eq("Hello, world!\n");
-}
 
 #[test]
 fn config_command_prints_config() {

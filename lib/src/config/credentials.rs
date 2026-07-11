@@ -18,6 +18,8 @@ pub struct AppCredentials {
     pub app_id: SecretString,
     pub key_type: KeyType,
     pub key: SecretString,
+    #[serde(default)]
+    pub installation_id: Option<SecretString>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -56,6 +58,11 @@ impl SecretString {
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    pub fn resolve(&self) -> Result<String, std::env::VarError> {
+        let name = self.0.strip_prefix('$').unwrap_or(&self.0);
+        std::env::var(name)
     }
 }
 
