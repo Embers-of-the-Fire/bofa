@@ -1,4 +1,5 @@
 pub mod credentials;
+pub mod log;
 pub mod repository;
 pub mod scanner;
 
@@ -21,6 +22,8 @@ pub struct BofaConfig {
     pub repository: repository::RepositoryConfig,
     #[serde(default)]
     pub scanner: scanner::ScannerConfig,
+    #[serde(default)]
+    pub log: log::LogConfig,
 }
 
 pub fn load_config(path: impl AsRef<Path>) -> Result<BofaConfig, Box<dyn std::error::Error>> {

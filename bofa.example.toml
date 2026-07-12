@@ -43,3 +43,14 @@ enabled = true
 description = "Example sensitive path group"
 paths = ["/path/to/repo1", "/path/to/repo2"]
 members = ["alice", "bob"]
+
+# Logging options.
+# Logs are written to stderr. Set enabled = false to turn logging off entirely.
+# level is a tracing directive string. Set the global level and per-module levels
+# with a comma-separated list, e.g. "warn,bofa_lib=trace".
+# format controls the output layout: "full", "compact", "pretty", or "json".
+# When RUST_LOG is set, it overrides the configured level.
+[log]
+enabled = true
+level = "warn,bofa_lib=trace"
+format = "full"

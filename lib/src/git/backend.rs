@@ -4,6 +4,7 @@ pub mod mock;
 use crate::config::Provider;
 use crate::config::credentials::Credentials;
 use async_trait::async_trait;
+use tracing::info;
 
 #[async_trait]
 pub trait GitBackend: Send + Sync {
@@ -26,6 +27,7 @@ pub async fn create_backend(
     credentials: &Credentials,
     provider: Provider,
 ) -> Result<Box<dyn GitBackend>, super::Error> {
+    info!(provider = ?provider, "creating git backend");
     match provider {
         Provider::GitHub => {
             let backend = github::GitHubBackend::authenticate(credentials).await?;

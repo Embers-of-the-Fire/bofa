@@ -142,6 +142,7 @@ mod tests {
                 repo: "repo".to_string(),
             },
             scanner: Default::default(),
+            log: Default::default(),
         }
     }
 

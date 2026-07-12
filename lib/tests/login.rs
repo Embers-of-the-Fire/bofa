@@ -16,6 +16,7 @@ fn test_config() -> BofaConfig {
             repo: "repo".to_string(),
         },
         scanner: Default::default(),
+        log: Default::default(),
     }
 }
 

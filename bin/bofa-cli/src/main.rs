@@ -31,16 +31,16 @@ async fn main() {
     dotenvy::dotenv().ok();
 
     let cli = Cli::parse();
-
     let config_path = cli.config.unwrap_or_else(|| PathBuf::from("bofa.toml"));
+    let bofa = load_config(&config_path);
+
+    bofa_lib::logging::init(&bofa.config().log, true);
 
     match cli.command {
         Commands::Config => {
-            let bofa = load_config(&config_path);
             println!("{:#?}", bofa.config());
         }
         Commands::Login => {
-            let bofa = load_config(&config_path);
             let bofa = authenticate(bofa).await;
             let message = bofa.login().await.unwrap_or_else(|err| {
                 eprintln!("Login failed: {err}");
@@ -51,7 +51,6 @@ async fn main() {
         Commands::Check {
             command: CheckCommands::Pr { id },
         } => {
-            let bofa = load_config(&config_path);
             let bofa = authenticate(bofa).await;
             let message = bofa.check_pr(id).await.unwrap_or_else(|err| {
                 eprintln!("Check failed: {err}");

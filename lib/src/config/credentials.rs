@@ -13,6 +13,24 @@ pub enum Credentials {
     PersonalToken(PersonalTokenCredentials),
 }
 
+impl Credentials {
+    pub fn describe(&self) -> String {
+        match self {
+            Credentials::App(c) => format!(
+                "app (app_id={}, installation_id={})",
+                c.app_id.name(),
+                c.installation_id
+                    .as_ref()
+                    .map(|s| s.name())
+                    .unwrap_or("none")
+            ),
+            Credentials::Account(c) => format!("account (username={})", c.username.name()),
+            Credentials::UserAccessToken(_) => "user_access_token".to_string(),
+            Credentials::PersonalToken(_) => "personal_token".to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct AppCredentials {
     pub app_id: SecretString,
@@ -57,6 +75,10 @@ impl SecretString {
     }
 
     pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn name(&self) -> &str {
         &self.0
     }
 
