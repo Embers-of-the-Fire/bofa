@@ -1,10 +1,12 @@
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Default, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct SensitiveScannerConfig {
     pub enabled: bool,
-    pub item: Vec<SensitiveScannerItem>,
+    #[serde(flatten, default)]
+    pub item: IndexMap<String, SensitiveScannerItem>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Deserialize, Serialize)]

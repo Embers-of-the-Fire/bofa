@@ -45,7 +45,7 @@ impl fmt::Display for PrCheckResult {
         } else {
             writeln!(f, "\nSensitive files changed:")?;
             for finding in &self.findings {
-                writeln!(f, "  [{}]", finding.description)?;
+                writeln!(f, "  [{}] {}", finding.name, finding.description)?;
                 writeln!(f, "    Matched paths: {}", finding.matched_paths.join(", "))?;
                 writeln!(
                     f,

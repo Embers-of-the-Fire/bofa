@@ -43,7 +43,7 @@ installation_id = "$INSTALLATION_ID"
 [scanner.sensitive]
 enabled = true
 
-[[scanner.sensitive.item]]
+[scanner.sensitive.example]
 description = "Example sensitive path group"
 paths = ["/path/to/repo1", "/path/to/repo2"]
 members = ["alice", "bob"]
