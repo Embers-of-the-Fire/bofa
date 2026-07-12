@@ -30,4 +30,13 @@ impl GitContext {
     ) -> Result<super::PullRequestMetadata, super::Error> {
         self.backend.pull_request(owner, repo, id).await
     }
+
+    pub async fn changed_files(
+        &self,
+        owner: &str,
+        repo: &str,
+        id: u64,
+    ) -> Result<Vec<super::ChangedFile>, super::Error> {
+        self.backend.changed_files(owner, repo, id).await
+    }
 }

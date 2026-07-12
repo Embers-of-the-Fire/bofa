@@ -53,3 +53,17 @@ pub struct PullRequestMetadata {
     pub draft: bool,
     pub url: String,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileChangeStatus {
+    Added,
+    Modified,
+    Removed,
+    Unknown,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChangedFile {
+    pub path: String,
+    pub status: FileChangeStatus,
+}

@@ -1,5 +1,7 @@
 use crate::config::repository::RepositoryConfig;
 use crate::git::PullRequestMetadata;
+use crate::scanner::sensitive::SensitiveFinding;
+use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrInput {
@@ -24,6 +26,36 @@ pub fn format_pr_metadata(metadata: &PullRequestMetadata) -> String {
         "#{} {} by {} [{}]{} {}",
         metadata.number, metadata.title, metadata.author, metadata.state, draft, metadata.url
     )
+}
+
+#[derive(Debug, Clone)]
+pub struct PrCheckResult {
+    pub metadata: PullRequestMetadata,
+    pub findings: Vec<SensitiveFinding>,
+    pub scanner_enabled: bool,
+}
+
+impl fmt::Display for PrCheckResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", format_pr_metadata(&self.metadata))?;
+        if self.findings.is_empty() {
+            if self.scanner_enabled {
+                write!(f, "\nNo sensitive files changed.")?;
+            }
+        } else {
+            writeln!(f, "\nSensitive files changed:")?;
+            for finding in &self.findings {
+                writeln!(f, "  [{}]", finding.description)?;
+                writeln!(f, "    Matched paths: {}", finding.matched_paths.join(", "))?;
+                writeln!(
+                    f,
+                    "    Related persons: {}",
+                    finding.related_persons.join(", ")
+                )?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

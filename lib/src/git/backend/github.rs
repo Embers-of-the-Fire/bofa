@@ -2,11 +2,15 @@ use crate::config::credentials::{
     AccountCredentials, AppCredentials, Credentials, KeyType, PersonalTokenCredentials,
     UserAccessTokenCredentials,
 };
-use crate::git::{AccountMetadata, AccountType, Error as GitError, PullRequestMetadata};
+use crate::git::{
+    AccountMetadata, AccountType, ChangedFile, Error as GitError, FileChangeStatus,
+    PullRequestMetadata,
+};
 use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as Base64Engine;
 use octocrab::Octocrab;
+use octocrab::models::repos::{DiffEntry, DiffEntryStatus};
 
 pub struct GitHubBackend {
     client: Octocrab,
@@ -233,6 +237,34 @@ impl super::GitBackend for GitHubBackend {
             url,
         })
     }
+
+    async fn changed_files(
+        &self,
+        owner: &str,
+        repo: &str,
+        id: u64,
+    ) -> Result<Vec<ChangedFile>, GitError> {
+        let first_page = self
+            .client
+            .pulls(owner, repo)
+            .list_files(id)
+            .await
+            .map_err(|e| GitError::Api(e.to_string()))?;
+
+        // FIXME: GitHub's PR files endpoint returns at most 3000 files. If a PR
+        // exceeds that limit, we silently truncate here. Defer a workaround
+        // (e.g. commit comparison or GraphQL) until it becomes necessary.
+        let entries = self
+            .client
+            .all_pages(first_page)
+            .await
+            .map_err(|e| GitError::Api(e.to_string()))?;
+
+        Ok(entries
+            .into_iter()
+            .map(changed_file_from_diff_entry)
+            .collect())
+    }
 }
 
 fn account_metadata_from_app(app: &octocrab::models::App) -> AccountMetadata {
@@ -262,5 +294,62 @@ fn account_type_from_author(author: &octocrab::models::Author) -> AccountType {
         "Organization" => AccountType::Organization,
         "Bot" => AccountType::Bot,
         other => AccountType::Other(other.to_string()),
+    }
+}
+
+fn changed_file_from_diff_entry(entry: DiffEntry) -> ChangedFile {
+    ChangedFile {
+        path: entry.filename,
+        status: file_change_status_from(&entry.status),
+    }
+}
+
+fn file_change_status_from(status: &DiffEntryStatus) -> FileChangeStatus {
+    match status {
+        DiffEntryStatus::Added => FileChangeStatus::Added,
+        DiffEntryStatus::Removed => FileChangeStatus::Removed,
+        DiffEntryStatus::Modified => FileChangeStatus::Modified,
+        DiffEntryStatus::Renamed | DiffEntryStatus::Copied | DiffEntryStatus::Changed => {
+            FileChangeStatus::Modified
+        }
+        DiffEntryStatus::Unchanged => FileChangeStatus::Unknown,
+        _ => FileChangeStatus::Unknown,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_diff_entry_statuses() {
+        assert_eq!(
+            file_change_status_from(&DiffEntryStatus::Added),
+            FileChangeStatus::Added
+        );
+        assert_eq!(
+            file_change_status_from(&DiffEntryStatus::Removed),
+            FileChangeStatus::Removed
+        );
+        assert_eq!(
+            file_change_status_from(&DiffEntryStatus::Modified),
+            FileChangeStatus::Modified
+        );
+        assert_eq!(
+            file_change_status_from(&DiffEntryStatus::Renamed),
+            FileChangeStatus::Modified
+        );
+        assert_eq!(
+            file_change_status_from(&DiffEntryStatus::Copied),
+            FileChangeStatus::Modified
+        );
+        assert_eq!(
+            file_change_status_from(&DiffEntryStatus::Changed),
+            FileChangeStatus::Modified
+        );
+        assert_eq!(
+            file_change_status_from(&DiffEntryStatus::Unchanged),
+            FileChangeStatus::Unknown
+        );
     }
 }

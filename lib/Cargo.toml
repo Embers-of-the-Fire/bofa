@@ -8,6 +8,7 @@ octocrab = "0.54.0"
 jsonwebtoken = "10.4"
 base64 = "0.22"
 thiserror = "2"
+glob = "0.3"
 serde = { workspace = true }
 toml = { workspace = true }
 async-trait = "0.1"

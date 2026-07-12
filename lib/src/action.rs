@@ -2,6 +2,7 @@ use crate::config::{BofaConfig, load_config};
 use crate::git::backend::GitBackend;
 use crate::git::context::GitContext;
 use crate::git::{AccountType, Error as GitError};
+use crate::scanner::sensitive::SensitiveScanner;
 use std::path::Path;
 use thiserror::Error;
 
@@ -100,7 +101,24 @@ impl AuthenticatedBofa {
             .context
             .pull_request(&input.owner, &input.repo, input.id)
             .await?;
-        Ok(check::pr::format_pr_metadata(&metadata))
+        let scanner_enabled = self.config.scanner.sensitive.enabled;
+        let findings = if scanner_enabled {
+            let changed_files = self
+                .context
+                .changed_files(&input.owner, &input.repo, input.id)
+                .await?;
+            let scanner = SensitiveScanner::new(&self.config.scanner.sensitive)
+                .map_err(check::Error::from)?;
+            scanner.scan(&changed_files)
+        } else {
+            Vec::new()
+        };
+        let result = check::pr::PrCheckResult {
+            metadata,
+            findings,
+            scanner_enabled,
+        };
+        Ok(result.to_string())
     }
 }
 
@@ -108,8 +126,10 @@ impl AuthenticatedBofa {
 mod tests {
     use super::*;
     use crate::config::credentials::{Credentials, PersonalTokenCredentials, SecretString};
+    use crate::config::scanner::sensitive::{SensitiveScannerConfig, SensitiveScannerItem};
     use crate::config::{BofaConfig, Provider};
     use crate::git::backend::mock::MockGitBackend;
+    use crate::git::{ChangedFile, FileChangeStatus, PullRequestMetadata};
 
     fn test_config() -> BofaConfig {
         BofaConfig {
@@ -122,6 +142,33 @@ mod tests {
                 repo: "repo".to_string(),
             },
             scanner: Default::default(),
+        }
+    }
+
+    fn config_with_sensitive_scanner() -> BofaConfig {
+        let mut config = test_config();
+        config.scanner.sensitive = SensitiveScannerConfig {
+            enabled: true,
+            item: vec![
+                SensitiveScannerItem {
+                    description: "Core repo".to_string(),
+                    paths: vec!["/path/to/repo1/**".to_string()],
+                    members: vec!["alice".to_string(), "bob".to_string()],
+                },
+                SensitiveScannerItem {
+                    description: "Other".to_string(),
+                    paths: vec!["/other/**".to_string()],
+                    members: vec!["carol".to_string()],
+                },
+            ],
+        };
+        config
+    }
+
+    fn changed_file(path: &str) -> ChangedFile {
+        ChangedFile {
+            path: path.to_string(),
+            status: FileChangeStatus::Modified,
         }
     }
 
@@ -168,5 +215,64 @@ mod tests {
         let output = bofa.check_pr(1).await.unwrap();
         assert!(output.contains("#1"));
         assert!(output.contains("Test PR"));
+    }
+
+    #[tokio::test]
+    async fn check_pr_reports_sensitive_files_and_related_persons() {
+        let backend = MockGitBackend::new();
+        backend.set_pull_request(|| async {
+            Ok(PullRequestMetadata {
+                number: 42,
+                title: "Fix bug".to_string(),
+                state: "closed".to_string(),
+                author: "dave".to_string(),
+                draft: false,
+                url: "https://github.com/owner/repo/pull/42".to_string(),
+            })
+        });
+        backend.set_changed_files(|| async {
+            Ok(vec![
+                changed_file("/path/to/repo1/src/main.rs"),
+                changed_file("/other/README.md"),
+            ])
+        });
+        let bofa = Bofa::new(config_with_sensitive_scanner())
+            .authenticate_with(Box::new(backend))
+            .await
+            .unwrap();
+        let output = bofa.check_pr(42).await.unwrap();
+        assert!(output.contains("#42 Fix bug by dave [closed]"));
+        assert!(output.contains("Core repo"));
+        assert!(output.contains("/path/to/repo1/src/main.rs"));
+        assert!(output.contains("alice"));
+        assert!(output.contains("bob"));
+        assert!(output.contains("Other"));
+        assert!(output.contains("/other/README.md"));
+        assert!(output.contains("carol"));
+    }
+
+    #[tokio::test]
+    async fn check_pr_reports_no_sensitive_files_changed() {
+        let backend = MockGitBackend::new();
+        backend.set_changed_files(|| async { Ok(vec![changed_file("/unrelated/file.txt")]) });
+        let bofa = Bofa::new(config_with_sensitive_scanner())
+            .authenticate_with(Box::new(backend))
+            .await
+            .unwrap();
+        let output = bofa.check_pr(42).await.unwrap();
+        assert!(output.contains("#1 Test PR by octocat [open]"));
+        assert!(output.contains("No sensitive files changed."));
+    }
+
+    #[tokio::test]
+    async fn check_pr_propagates_changed_files_error() {
+        let backend = MockGitBackend::new();
+        backend.set_changed_files(|| async { Err(GitError::Api("diff boom".to_string())) });
+        let bofa = Bofa::new(config_with_sensitive_scanner())
+            .authenticate_with(Box::new(backend))
+            .await
+            .unwrap();
+        let err = bofa.check_pr(42).await.unwrap_err();
+        assert!(matches!(err, Error::Git(GitError::Api(_))));
     }
 }

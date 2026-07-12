@@ -14,6 +14,12 @@ pub trait GitBackend: Send + Sync {
         repo: &str,
         id: u64,
     ) -> Result<super::PullRequestMetadata, super::Error>;
+    async fn changed_files(
+        &self,
+        owner: &str,
+        repo: &str,
+        id: u64,
+    ) -> Result<Vec<super::ChangedFile>, super::Error>;
 }
 
 pub async fn create_backend(
