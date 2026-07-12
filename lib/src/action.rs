@@ -1,5 +1,5 @@
 use crate::config::{BofaConfig, load_config};
-use crate::git::backend::GitBackend;
+use crate::git::backend::{GitBackend, create_backend, dry_run::DryRunBackend};
 use crate::git::context::GitContext;
 use crate::git::{AccountType, Error as GitError};
 use crate::scanner::sensitive::SensitiveScanner;
@@ -40,6 +40,7 @@ impl Bofa {
         self,
         backend: Box<dyn GitBackend>,
     ) -> Result<AuthenticatedBofa, Error> {
+        let backend = self.wrap_backend(backend);
         let context = GitContext::from_backend(backend);
         Ok(AuthenticatedBofa {
             config: self.config,
@@ -48,13 +49,30 @@ impl Bofa {
     }
 
     pub async fn ensure_authenticated(self) -> Result<AuthenticatedBofa, Error> {
-        let context =
-            GitContext::from_credentials(&self.config.credentials, self.config.provider.clone())
-                .await?;
+        let backend = create_backend(
+            &self.config.credentials,
+            self.config.worker.provider.clone(),
+            self.config.worker.dry_run,
+        )
+        .await?;
+        let context = GitContext::from_backend(backend);
         Ok(AuthenticatedBofa {
             config: self.config,
             context,
         })
+    }
+
+    fn wrap_backend(&self, backend: Box<dyn GitBackend>) -> Box<dyn GitBackend> {
+        if self.config.worker.dry_run {
+            Box::new(DryRunBackend::new(backend))
+        } else {
+            backend
+        }
+    }
+
+    pub fn with_dry_run(mut self, dry_run: bool) -> Self {
+        self.config.worker.dry_run = self.config.worker.dry_run || dry_run;
+        self
     }
 }
 
@@ -125,15 +143,14 @@ impl AuthenticatedBofa {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::BofaConfig;
     use crate::config::credentials::{Credentials, PersonalTokenCredentials, SecretString};
     use crate::config::scanner::sensitive::{SensitiveScannerConfig, SensitiveScannerItem};
-    use crate::config::{BofaConfig, Provider};
     use crate::git::backend::mock::MockGitBackend;
     use crate::git::{ChangedFile, FileChangeStatus, PullRequestMetadata};
 
     fn test_config() -> BofaConfig {
         BofaConfig {
-            provider: Provider::GitHub,
             credentials: Credentials::PersonalToken(PersonalTokenCredentials {
                 token: SecretString::new("$DUMMY_TOKEN"),
             }),
@@ -141,6 +158,7 @@ mod tests {
                 owner: "owner".to_string(),
                 repo: "repo".to_string(),
             },
+            worker: Default::default(),
             scanner: Default::default(),
             log: Default::default(),
         }
@@ -275,5 +293,79 @@ mod tests {
             .unwrap();
         let err = bofa.check_pr(42).await.unwrap_err();
         assert!(matches!(err, Error::Git(GitError::Api(_))));
+    }
+
+    #[tokio::test]
+    async fn dry_run_blocks_delete_branch() {
+        let mut config = test_config();
+        config.worker.dry_run = true;
+        let bofa = Bofa::new(config)
+            .authenticate_with(Box::new(MockGitBackend::new()))
+            .await
+            .unwrap();
+        let err = bofa
+            .context()
+            .delete_branch("owner", "repo", "feature")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, GitError::DryRun(_)));
+    }
+
+    #[tokio::test]
+    async fn dry_run_blocks_publish_release() {
+        let mut config = test_config();
+        config.worker.dry_run = true;
+        let bofa = Bofa::new(config)
+            .authenticate_with(Box::new(MockGitBackend::new()))
+            .await
+            .unwrap();
+        let err = bofa
+            .context()
+            .publish_release("owner", "repo", "v1.0.0")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, GitError::DryRun(_)));
+    }
+
+    #[tokio::test]
+    async fn dry_run_blocks_upload_file() {
+        let mut config = test_config();
+        config.worker.dry_run = true;
+        let bofa = Bofa::new(config)
+            .authenticate_with(Box::new(MockGitBackend::new()))
+            .await
+            .unwrap();
+        let err = bofa
+            .context()
+            .upload_file("owner", "repo", "path.txt", b"content")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, GitError::DryRun(_)));
+    }
+
+    #[tokio::test]
+    async fn non_fetch_actions_reach_backend_when_not_dry_run() {
+        let bofa = Bofa::new(test_config())
+            .authenticate_with(Box::new(MockGitBackend::new()))
+            .await
+            .unwrap();
+        let err = bofa
+            .context()
+            .delete_branch("owner", "repo", "feature")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, GitError::Unsupported(_)));
+    }
+
+    #[tokio::test]
+    async fn fetch_actions_work_in_dry_run() {
+        let mut config = test_config();
+        config.worker.dry_run = true;
+        let bofa = Bofa::new(config)
+            .authenticate_with(Box::new(MockGitBackend::new()))
+            .await
+            .unwrap();
+        let output = bofa.check_pr(1).await.unwrap();
+        assert!(output.contains("#1"));
     }
 }

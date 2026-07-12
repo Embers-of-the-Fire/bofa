@@ -265,6 +265,29 @@ impl super::GitBackend for GitHubBackend {
             .map(changed_file_from_diff_entry)
             .collect())
     }
+
+    async fn delete_branch(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _branch: &str,
+    ) -> Result<(), GitError> {
+        Err(GitError::Unsupported("delete_branch".to_string()))
+    }
+
+    async fn publish_release(&self, _owner: &str, _repo: &str, _tag: &str) -> Result<(), GitError> {
+        Err(GitError::Unsupported("publish_release".to_string()))
+    }
+
+    async fn upload_file(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _path: &str,
+        _content: &[u8],
+    ) -> Result<(), GitError> {
+        Err(GitError::Unsupported("upload_file".to_string()))
+    }
 }
 
 fn account_metadata_from_app(app: &octocrab::models::App) -> AccountMetadata {

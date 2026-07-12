@@ -1,13 +1,12 @@
 use bofa_lib::action::Bofa;
+use bofa_lib::config::BofaConfig;
 use bofa_lib::config::credentials::{Credentials, PersonalTokenCredentials, SecretString};
 use bofa_lib::config::repository::RepositoryConfig;
-use bofa_lib::config::{BofaConfig, Provider};
 use bofa_lib::git::backend::mock::MockGitBackend;
 use bofa_lib::git::{AccountMetadata, AccountType};
 
 fn test_config() -> BofaConfig {
     BofaConfig {
-        provider: Provider::GitHub,
         credentials: Credentials::PersonalToken(PersonalTokenCredentials {
             token: SecretString::new("$DUMMY_TOKEN"),
         }),
@@ -15,6 +14,7 @@ fn test_config() -> BofaConfig {
             owner: "owner".to_string(),
             repo: "repo".to_string(),
         },
+        worker: Default::default(),
         scanner: Default::default(),
         log: Default::default(),
     }

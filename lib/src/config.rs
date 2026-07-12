@@ -2,6 +2,7 @@ pub mod credentials;
 pub mod log;
 pub mod repository;
 pub mod scanner;
+pub mod worker;
 
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -16,10 +17,10 @@ pub enum Provider {
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct BofaConfig {
-    #[serde(default)]
-    pub provider: Provider,
     pub credentials: credentials::Credentials,
     pub repository: repository::RepositoryConfig,
+    #[serde(default)]
+    pub worker: worker::WorkerConfig,
     #[serde(default)]
     pub scanner: scanner::ScannerConfig,
     #[serde(default)]

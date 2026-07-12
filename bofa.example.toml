@@ -2,11 +2,15 @@
 # Copy this file to bofa.toml and fill in your credentials.
 # Secrets are referenced as environment variable names prefixed with '$'.
 
-provider = "github"
-
 [repository]
 owner = "your-owner"
 repo = "your-repo"
+
+[worker]
+provider = "github"
+# When dry_run is true, non-fetch actions such as upload, delete, and publish
+# are blocked. Fetch actions like check pr continue to work.
+dry_run = false
 
 [credentials]
 type = "app"

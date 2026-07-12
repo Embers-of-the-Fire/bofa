@@ -13,6 +13,10 @@ pub enum Error {
     Api(String),
     #[error("unsupported provider: {0}")]
     UnsupportedProvider(String),
+    #[error("unsupported operation: {0}")]
+    Unsupported(String),
+    #[error("dry run blocked non-fetch action: {0}")]
+    DryRun(String),
 }
 
 #[derive(Debug, Clone)]

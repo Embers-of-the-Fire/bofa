@@ -1,6 +1,4 @@
-use crate::config::Provider;
-use crate::config::credentials::Credentials;
-use tracing::{info, instrument};
+use tracing::{instrument, trace};
 
 pub struct GitContext {
     backend: Box<dyn super::backend::GitBackend>,
@@ -8,20 +6,8 @@ pub struct GitContext {
 
 impl GitContext {
     pub fn from_backend(backend: Box<dyn super::backend::GitBackend>) -> Self {
+        trace!("creating git context from backend");
         Self { backend }
-    }
-
-    pub async fn from_credentials(
-        credentials: &Credentials,
-        provider: Provider,
-    ) -> Result<Self, super::Error> {
-        info!(
-            credentials = credentials.describe(),
-            provider = ?provider,
-            "creating git context from credentials"
-        );
-        let backend = super::backend::create_backend(credentials, provider).await?;
-        Ok(Self { backend })
     }
 
     #[instrument(skip(self), err)]
@@ -47,5 +33,36 @@ impl GitContext {
         id: u64,
     ) -> Result<Vec<super::ChangedFile>, super::Error> {
         self.backend.changed_files(owner, repo, id).await
+    }
+
+    #[instrument(skip(self), fields(owner, repo, branch), err)]
+    pub async fn delete_branch(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+    ) -> Result<(), super::Error> {
+        self.backend.delete_branch(owner, repo, branch).await
+    }
+
+    #[instrument(skip(self), fields(owner, repo, tag), err)]
+    pub async fn publish_release(
+        &self,
+        owner: &str,
+        repo: &str,
+        tag: &str,
+    ) -> Result<(), super::Error> {
+        self.backend.publish_release(owner, repo, tag).await
+    }
+
+    #[instrument(skip(self, content), fields(owner, repo, path), err)]
+    pub async fn upload_file(
+        &self,
+        owner: &str,
+        repo: &str,
+        path: &str,
+        content: &[u8],
+    ) -> Result<(), super::Error> {
+        self.backend.upload_file(owner, repo, path, content).await
     }
 }

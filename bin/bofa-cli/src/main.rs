@@ -7,6 +7,8 @@ use std::path::PathBuf;
 struct Cli {
     #[arg(long, global = true, value_name = "PATH")]
     config: Option<PathBuf>,
+    #[arg(long, global = true)]
+    dry_run: bool,
     #[command(subcommand)]
     command: Commands,
 }
@@ -32,7 +34,7 @@ async fn main() {
 
     let cli = Cli::parse();
     let config_path = cli.config.unwrap_or_else(|| PathBuf::from("bofa.toml"));
-    let bofa = load_config(&config_path);
+    let bofa = load_config(&config_path).with_dry_run(cli.dry_run);
 
     bofa_lib::logging::init(&bofa.config().log, true);
 

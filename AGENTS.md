@@ -31,3 +31,9 @@ Run these in order before finishing:
 - Unit tests in `lib/src/` and `lib/tests/` use the mock Git backend (`lib/src/git/backend/mock.rs`) and do not hit the network.
 - `bin/bofa-cli/tests/cli.rs` builds and runs the real `bofa` binary via `snapbox`.
 - Run a single package or test with normal Cargo patterns, e.g. `cargo test --package bofa-lib -- test_name`.
+
+## Dry-run
+- Dry-run is configured via `[worker].dry_run` or the `--dry-run` CLI flag; the flag ORs with the config value.
+- Enforcement happens at the backend boundary through `git/backend/dry_run.rs` (`DryRunBackend`).
+- `DryRunBackend` wraps the real backend; fetch actions delegate to the inner backend, non-fetch actions return `git::Error::DryRun` before any API call.
+- To add a new mutating action, add it to the `GitBackend` trait, implement it in `github.rs` and `mock.rs`, and add a matching delegation/stub in `DryRunBackend`.

@@ -131,6 +131,29 @@ impl super::GitBackend for MockGitBackend {
         let fut = self.changed_files_fn.lock().unwrap()();
         fut.await
     }
+
+    async fn delete_branch(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _branch: &str,
+    ) -> Result<(), GitError> {
+        Err(GitError::Unsupported("delete_branch".to_string()))
+    }
+
+    async fn publish_release(&self, _owner: &str, _repo: &str, _tag: &str) -> Result<(), GitError> {
+        Err(GitError::Unsupported("publish_release".to_string()))
+    }
+
+    async fn upload_file(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _path: &str,
+        _content: &[u8],
+    ) -> Result<(), GitError> {
+        Err(GitError::Unsupported("upload_file".to_string()))
+    }
 }
 
 #[cfg(test)]
