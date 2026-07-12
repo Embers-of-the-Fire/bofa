@@ -6,6 +6,10 @@ pub struct GitContext {
 }
 
 impl GitContext {
+    pub fn from_backend(backend: Box<dyn super::backend::GitBackend>) -> Self {
+        Self { backend }
+    }
+
     pub async fn from_credentials(
         credentials: &Credentials,
         provider: Provider,

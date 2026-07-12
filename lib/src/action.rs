@@ -1,4 +1,5 @@
 use crate::config::{BofaConfig, load_config};
+use crate::git::backend::GitBackend;
 use crate::git::context::GitContext;
 use crate::git::{AccountType, Error as GitError};
 use std::path::Path;
@@ -28,6 +29,17 @@ impl Bofa {
 
     pub fn config(&self) -> &BofaConfig {
         &self.config
+    }
+
+    pub async fn authenticate_with(
+        self,
+        backend: Box<dyn GitBackend>,
+    ) -> Result<AuthenticatedBofa, Error> {
+        let context = GitContext::from_backend(backend);
+        Ok(AuthenticatedBofa {
+            config: self.config,
+            context,
+        })
     }
 
     pub async fn ensure_authenticated(self) -> Result<AuthenticatedBofa, Error> {
@@ -76,5 +88,36 @@ impl AuthenticatedBofa {
             }
         };
         Ok(message)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::credentials::{Credentials, PersonalTokenCredentials, SecretString};
+    use crate::config::{BofaConfig, Provider};
+    use crate::git::backend::mock::MockGitBackend;
+
+    fn test_config() -> BofaConfig {
+        BofaConfig {
+            provider: Provider::GitHub,
+            credentials: Credentials::PersonalToken(PersonalTokenCredentials {
+                token: SecretString::new("$DUMMY_TOKEN"),
+            }),
+            scanner: Default::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn login_propagates_backend_error() {
+        let backend = Box::new(MockGitBackend::with_account_metadata(|| async {
+            Err(GitError::Api("boom".to_string()))
+        }));
+        let bofa = Bofa::new(test_config())
+            .authenticate_with(backend)
+            .await
+            .unwrap();
+        let err = bofa.login().await.unwrap_err();
+        assert!(matches!(err, Error::Git(GitError::Api(_))));
     }
 }

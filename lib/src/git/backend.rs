@@ -1,4 +1,5 @@
 pub mod github;
+pub mod mock;
 
 use crate::config::Provider;
 use crate::config::credentials::Credentials;
