@@ -1,4 +1,5 @@
 pub mod credentials;
+pub mod repository;
 pub mod scanner;
 
 use serde::{Deserialize, Serialize};
@@ -17,6 +18,7 @@ pub struct BofaConfig {
     #[serde(default)]
     pub provider: Provider,
     pub credentials: credentials::Credentials,
+    pub repository: repository::RepositoryConfig,
     #[serde(default)]
     pub scanner: scanner::ScannerConfig,
 }
@@ -24,5 +26,6 @@ pub struct BofaConfig {
 pub fn load_config(path: impl AsRef<Path>) -> Result<BofaConfig, Box<dyn std::error::Error>> {
     let contents = fs::read_to_string(path)?;
     let config: BofaConfig = toml::from_str(&contents)?;
+    config.repository.validate()?;
     Ok(config)
 }

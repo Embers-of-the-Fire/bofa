@@ -8,6 +8,12 @@ use async_trait::async_trait;
 #[async_trait]
 pub trait GitBackend: Send + Sync {
     async fn account_metadata(&self) -> Result<super::AccountMetadata, super::Error>;
+    async fn pull_request(
+        &self,
+        owner: &str,
+        repo: &str,
+        id: u64,
+    ) -> Result<super::PullRequestMetadata, super::Error>;
 }
 
 pub async fn create_backend(

@@ -43,3 +43,13 @@ pub struct AccountMetadata {
     pub account_type: AccountType,
     pub installation: Option<Box<AccountMetadata>>,
 }
+
+#[derive(Debug, Clone)]
+pub struct PullRequestMetadata {
+    pub number: u64,
+    pub title: String,
+    pub state: String,
+    pub author: String,
+    pub draft: bool,
+    pub url: String,
+}

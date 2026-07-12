@@ -21,4 +21,13 @@ impl GitContext {
     pub async fn account_metadata(&self) -> Result<super::AccountMetadata, super::Error> {
         self.backend.account_metadata().await
     }
+
+    pub async fn pull_request(
+        &self,
+        owner: &str,
+        repo: &str,
+        id: u64,
+    ) -> Result<super::PullRequestMetadata, super::Error> {
+        self.backend.pull_request(owner, repo, id).await
+    }
 }

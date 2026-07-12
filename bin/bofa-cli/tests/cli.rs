@@ -5,7 +5,7 @@ fn config_command_prints_config() {
     let path = std::env::temp_dir().join(format!("bofa_test_config_{}.toml", std::process::id()));
     std::fs::write(
         &path,
-        "[credentials]\ntype = \"app\"\napp_id = \"$APP_ID\"\nkey_type = \"DER\"\nkey = \"$APP_KEY\"\n\n[scanner.sensitive]\nenabled = true\nitem = []\n",
+        "[credentials]\ntype = \"app\"\napp_id = \"$APP_ID\"\nkey_type = \"DER\"\nkey = \"$APP_KEY\"\n\n[repository]\nowner = \"owner\"\nrepo = \"repo\"\n\n[scanner.sensitive]\nenabled = true\nitem = []\n",
     )
     .unwrap();
 

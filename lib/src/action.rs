@@ -5,12 +5,16 @@ use crate::git::{AccountType, Error as GitError};
 use std::path::Path;
 use thiserror::Error;
 
+pub mod check;
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("failed to load config: {0}")]
     Config(String),
     #[error(transparent)]
     Git(#[from] GitError),
+    #[error(transparent)]
+    Check(#[from] check::Error),
 }
 
 pub struct Bofa {
@@ -89,6 +93,15 @@ impl AuthenticatedBofa {
         };
         Ok(message)
     }
+
+    pub async fn check_pr(&self, id: u64) -> Result<String, Error> {
+        let input = check::pr::PrInput::from_repository(id, &self.config.repository);
+        let metadata = self
+            .context
+            .pull_request(&input.owner, &input.repo, input.id)
+            .await?;
+        Ok(check::pr::format_pr_metadata(&metadata))
+    }
 }
 
 #[cfg(test)]
@@ -104,6 +117,10 @@ mod tests {
             credentials: Credentials::PersonalToken(PersonalTokenCredentials {
                 token: SecretString::new("$DUMMY_TOKEN"),
             }),
+            repository: crate::config::repository::RepositoryConfig {
+                owner: "owner".to_string(),
+                repo: "repo".to_string(),
+            },
             scanner: Default::default(),
         }
     }
@@ -119,5 +136,37 @@ mod tests {
             .unwrap();
         let err = bofa.login().await.unwrap_err();
         assert!(matches!(err, Error::Git(GitError::Api(_))));
+    }
+
+    #[tokio::test]
+    async fn check_pr_propagates_backend_error() {
+        let backend = MockGitBackend::with_account_metadata(|| async {
+            Ok(crate::git::AccountMetadata {
+                id: 1,
+                login: "alice".to_string(),
+                account_type: AccountType::User,
+                installation: None,
+            })
+        });
+        backend.set_pull_request(|| async { Err(GitError::Api("boom".to_string())) });
+        let backend = Box::new(backend);
+        let bofa = Bofa::new(test_config())
+            .authenticate_with(backend)
+            .await
+            .unwrap();
+        let err = bofa.check_pr(1).await.unwrap_err();
+        assert!(matches!(err, Error::Git(GitError::Api(_))));
+    }
+
+    #[tokio::test]
+    async fn check_pr_formats_metadata() {
+        let backend = Box::new(MockGitBackend::new());
+        let bofa = Bofa::new(test_config())
+            .authenticate_with(backend)
+            .await
+            .unwrap();
+        let output = bofa.check_pr(1).await.unwrap();
+        assert!(output.contains("#1"));
+        assert!(output.contains("Test PR"));
     }
 }

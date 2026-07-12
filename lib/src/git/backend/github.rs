@@ -2,7 +2,7 @@ use crate::config::credentials::{
     AccountCredentials, AppCredentials, Credentials, KeyType, PersonalTokenCredentials,
     UserAccessTokenCredentials,
 };
-use crate::git::{AccountMetadata, AccountType, Error as GitError};
+use crate::git::{AccountMetadata, AccountType, Error as GitError, PullRequestMetadata};
 use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as Base64Engine;
@@ -195,6 +195,43 @@ impl super::GitBackend for GitHubBackend {
                 })
             }
         }
+    }
+
+    async fn pull_request(
+        &self,
+        owner: &str,
+        repo: &str,
+        id: u64,
+    ) -> Result<PullRequestMetadata, GitError> {
+        let pr = self
+            .client
+            .pulls(owner, repo)
+            .get(id)
+            .await
+            .map_err(|e| GitError::Api(e.to_string()))?;
+        let state = pr
+            .state
+            .map(|s| match s {
+                octocrab::models::IssueState::Open => "open".to_string(),
+                octocrab::models::IssueState::Closed => "closed".to_string(),
+                _ => "unknown".to_string(),
+            })
+            .unwrap_or_else(|| "unknown".to_string());
+        let author = pr
+            .user
+            .as_ref()
+            .map(|user| user.login.clone())
+            .unwrap_or_else(|| "unknown".to_string());
+        let title = pr.title.unwrap_or_default();
+        let url = pr.html_url.map(|url| url.to_string()).unwrap_or(pr.url);
+        Ok(PullRequestMetadata {
+            number: pr.number,
+            title,
+            state,
+            author,
+            draft: pr.draft.unwrap_or(false),
+            url,
+        })
     }
 }
 

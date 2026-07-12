@@ -4,6 +4,10 @@
 
 provider = "github"
 
+[repository]
+owner = "your-owner"
+repo = "your-repo"
+
 [credentials]
 type = "app"
 app_id = "$APP_ID"
