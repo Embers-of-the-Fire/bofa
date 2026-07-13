@@ -515,6 +515,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn returns_custom_update_comment_url_from_lambda() {
+        let backend = MockGitBackend::new();
+        backend.set_update_comment(|| async {
+            Ok("https://github.com/custom/repo/pull/42#issuecomment-99".to_string())
+        });
+        let url = backend
+            .update_comment("owner", "repo", 7, "body")
+            .await
+            .unwrap();
+        assert_eq!(
+            url,
+            "https://github.com/custom/repo/pull/42#issuecomment-99"
+        );
+    }
+
+    #[tokio::test]
     async fn returns_update_comment_error_from_lambda() {
         let backend = MockGitBackend::new();
         backend.set_update_comment(|| async { Err(GitError::Api("boom".to_string())) });
