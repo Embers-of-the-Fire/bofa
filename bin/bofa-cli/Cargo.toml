@@ -1,16 +1,22 @@
 [package]
 name = "bofa-cli"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "CLI bot that scans GitHub PRs for sensitive file changes and posts templated review comments"
+readme = "README.md"
+keywords = ["github", "pr-scanner", "code-review", "bot", "ci"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
-clap = { workspace = true }
-bofa-lib = { path = "../../lib" }
-dotenvy = "0.15"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+bofa-lib.workspace = true
+clap.workspace = true
+dotenvy.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [dev-dependencies]
-snapbox = { workspace = true }
+snapbox.workspace = true
 
 [[bin]]
 name = "bofa"

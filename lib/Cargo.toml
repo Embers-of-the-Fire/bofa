@@ -1,21 +1,27 @@
 [package]
 name = "bofa-lib"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Library for scanning GitHub pull requests for sensitive file changes and posting templated comment reports"
+readme = "README.md"
+keywords = ["github", "pr-scanner", "code-review", "bot", "ci"]
+categories = ["development-tools", "api-bindings"]
 
 [dependencies]
-octocrab = "0.54.0"
-jsonwebtoken = "10.4"
-base64 = "0.22"
-thiserror = "2"
-glob = "0.3"
-indexmap = { version = "2", features = ["serde"] }
-serde = { workspace = true }
-toml = { workspace = true }
-async-trait = "0.1"
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-tera = "1"
+async-trait.workspace = true
+base64.workspace = true
+glob.workspace = true
+indexmap.workspace = true
+jsonwebtoken.workspace = true
+octocrab.workspace = true
+serde.workspace = true
+tera.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["rt"] }
