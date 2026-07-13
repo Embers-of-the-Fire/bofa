@@ -5,7 +5,7 @@ use crate::git::{AccountType, Error as GitError};
 use crate::scanner::sensitive::SensitiveScanner;
 use std::path::Path;
 use thiserror::Error;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 pub mod check;
 
@@ -151,6 +151,20 @@ impl AuthenticatedBofa {
             debug!("scanner disabled, skipping changed files");
             Vec::new()
         };
+        let footnote_template = self.config.template.comment.footnote.clone();
+        let will_report =
+            !findings.is_empty() || (scanner_active && self.config.scanner.sensitive.always_report);
+        let app_name = if will_report && footnote_template.as_deref() != Some("") {
+            match self.context.account_metadata().await {
+                Ok(metadata) => Some(metadata.login),
+                Err(err) => {
+                    warn!(error = %err, "failed to resolve account name for comment footnote");
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let result = check::pr::PrCheckResult {
             metadata,
             findings,
@@ -158,6 +172,8 @@ impl AuthenticatedBofa {
             always_report: self.config.scanner.sensitive.always_report,
             report_template: self.config.template.scanner.sensitive.report.clone(),
             empty_report_template: self.config.template.scanner.sensitive.empty_report.clone(),
+            footnote_template,
+            app_name,
         };
         let rendered = result.render()?;
         let (posted, comment_url) = if self.config.worker.post_comments {

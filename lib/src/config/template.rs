@@ -4,6 +4,14 @@ use serde::{Deserialize, Serialize};
 pub struct TemplateConfig {
     #[serde(default)]
     pub scanner: ScannerTemplateConfig,
+    #[serde(default)]
+    pub comment: CommentTemplateConfig,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Deserialize, Serialize)]
+pub struct CommentTemplateConfig {
+    #[serde(default)]
+    pub footnote: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Deserialize, Serialize)]
