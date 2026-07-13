@@ -196,7 +196,7 @@ impl AuthenticatedBofa {
                         has_marker(&comment.body)
                             && account_login
                                 .as_ref()
-                                .is_none_or(|me| &comment.author_login == me)
+                                .is_some_and(|me| &comment.author_login == me)
                     })
                     .max_by_key(|comment| comment.id);
                 match existing {
@@ -713,6 +713,38 @@ mod tests {
             output.comment_url,
             Some("https://github.com/test/repo/pull/1#issuecomment-1".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn check_pr_creates_new_comment_when_account_metadata_fails() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let backend = MockGitBackend::new();
+        backend.set_account_metadata(|| async { Err(GitError::Api("metadata boom".to_string())) });
+        backend.set_changed_files(|| async { Ok(vec![changed_file("/unrelated/file.txt")]) });
+        backend
+            .set_list_comments(|| async { Ok(vec![marked_comment(7, "octocat", "stale report")]) });
+        let update_calls = Arc::new(AtomicU32::new(0));
+        let uc = Arc::clone(&update_calls);
+        backend.set_update_comment(move || {
+            let uc = Arc::clone(&uc);
+            async move {
+                uc.fetch_add(1, Ordering::SeqCst);
+                Ok("https://updated".to_string())
+            }
+        });
+        let bofa = Bofa::new(config_with_always_report())
+            .authenticate_with(Box::new(backend))
+            .await
+            .unwrap();
+        let output = bofa.check_pr(42).await.unwrap();
+        assert_eq!(output.status, CommentStatus::Created);
+        assert_eq!(
+            output.comment_url,
+            Some("https://github.com/test/repo/pull/1#issuecomment-1".to_string())
+        );
+        assert_eq!(update_calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
