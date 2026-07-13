@@ -2,6 +2,7 @@ pub mod credentials;
 pub mod log;
 pub mod repository;
 pub mod scanner;
+pub mod template;
 pub mod worker;
 
 use serde::{Deserialize, Serialize};
@@ -23,6 +24,8 @@ pub struct BofaConfig {
     pub worker: worker::WorkerConfig,
     #[serde(default)]
     pub scanner: scanner::ScannerConfig,
+    #[serde(default)]
+    pub template: template::TemplateConfig,
     #[serde(default)]
     pub log: log::LogConfig,
 }

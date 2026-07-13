@@ -1,6 +1,7 @@
 use crate::config::scanner::sensitive::SensitiveScannerConfig;
 use crate::git::ChangedFile;
 use glob::{MatchOptions, Pattern};
+use serde::Serialize;
 
 const MATCH_OPTIONS: MatchOptions = MatchOptions {
     case_sensitive: true,
@@ -8,7 +9,7 @@ const MATCH_OPTIONS: MatchOptions = MatchOptions {
     require_literal_leading_dot: false,
 };
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SensitiveFinding {
     pub name: String,
     pub description: String,
@@ -97,6 +98,7 @@ mod tests {
     fn config_with_items(items: IndexMap<String, SensitiveScannerItem>) -> SensitiveScannerConfig {
         SensitiveScannerConfig {
             enabled: true,
+            always_report: false,
             item: items,
         }
     }

@@ -8,9 +8,12 @@ repo = "your-repo"
 
 [worker]
 provider = "github"
-# When dry_run is true, non-fetch actions such as upload, delete, and publish
-# are blocked. Fetch actions like check pr continue to work.
+# When dry_run is true, non-fetch actions such as upload, delete, publish, and
+# post_comment are blocked. Fetch actions continue to work.
 dry_run = false
+# When post_comments is true, the rendered check_pr report is posted as a
+# comment on the target pull request. Defaults to true.
+post_comments = true
 
 [credentials]
 type = "app"
@@ -40,13 +43,43 @@ installation_id = "$INSTALLATION_ID"
 # type = "personal_token"
 # token = "$BOFA_PERSONAL_TOKEN"
 
+[scanner]
+# When enabled is false, the entire scanner step is skipped during check pr.
+# Defaults to true.
+enabled = true
+
 [scanner.sensitive]
 enabled = true
+# When always_report is true, a report is rendered even if no sensitive files
+# are found. Defaults to false.
+# always_report = false
 
 [scanner.sensitive.example]
 description = "Example sensitive path group"
 paths = ["/path/to/repo1", "/path/to/repo2"]
 members = ["alice", "bob"]
+
+# Template overrides.
+# The report template is rendered when the sensitive scanner finds matching files
+# in a pull request. It receives a `findings` list; each finding has `name`,
+# `description`, `matched_paths`, and `related_persons`. If omitted, the default
+# template is used.
+#
+# The empty_report template is rendered when the sensitive scanner is enabled but
+# finds no matching files and [scanner.sensitive].always_report is true. If
+# omitted, the default template "No sensitive files found." is used.
+[template.scanner.sensitive]
+# report = """
+# Scanner found {{ findings | length }} sensitive groups being changed:
+# {% for finding in findings -%}
+# - {{ finding.name }}: {{ finding.description }}
+#   Affected files:
+# {% for path in finding.matched_paths %}  - `{{ path }}`
+# {% endfor %}
+#   cc {% for person in finding.related_persons %}@{{ person }}{% if not loop.last %} {% endif %}{% endfor %}
+# {% endfor -%}
+# """
+# empty_report = "No sensitive files found."
 
 # Logging options.
 # Logs are written to stderr. Set enabled = false to turn logging off entirely.

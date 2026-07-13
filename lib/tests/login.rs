@@ -16,6 +16,7 @@ fn test_config() -> BofaConfig {
         },
         worker: Default::default(),
         scanner: Default::default(),
+        template: Default::default(),
         log: Default::default(),
     }
 }

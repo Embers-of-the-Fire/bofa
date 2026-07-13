@@ -11,6 +11,7 @@ type AccountMetadataFuture =
 type PullRequestFuture =
     Pin<Box<dyn Future<Output = Result<PullRequestMetadata, GitError>> + Send>>;
 type ChangedFilesFuture = Pin<Box<dyn Future<Output = Result<Vec<ChangedFile>, GitError>> + Send>>;
+type PostCommentFuture = Pin<Box<dyn Future<Output = Result<String, GitError>> + Send>>;
 
 pub struct MockGitBackend {
     account_metadata_fn: Mutex<Box<dyn Fn() -> AccountMetadataFuture + Send + Sync>>,
@@ -19,6 +20,8 @@ pub struct MockGitBackend {
     pull_request_calls: Mutex<u32>,
     changed_files_fn: Mutex<Box<dyn Fn() -> ChangedFilesFuture + Send + Sync>>,
     changed_files_calls: Mutex<u32>,
+    post_comment_fn: Mutex<Box<dyn Fn() -> PostCommentFuture + Send + Sync>>,
+    post_comment_calls: Mutex<u32>,
 }
 
 impl Default for MockGitBackend {
@@ -62,6 +65,12 @@ impl MockGitBackend {
             pull_request_calls: Mutex::new(0),
             changed_files_fn: Mutex::new(Box::new(move || Box::pin(async { Ok(Vec::new()) }))),
             changed_files_calls: Mutex::new(0),
+            post_comment_fn: Mutex::new(Box::new(move || {
+                Box::pin(async {
+                    Ok("https://github.com/test/repo/pull/1#issuecomment-1".to_string())
+                })
+            })),
+            post_comment_calls: Mutex::new(0),
         }
     }
 
@@ -100,6 +109,18 @@ impl MockGitBackend {
     pub fn changed_files_calls(&self) -> u32 {
         *self.changed_files_calls.lock().unwrap()
     }
+
+    pub fn set_post_comment<F, Fut>(&self, f: F)
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<String, GitError>> + Send + 'static,
+    {
+        *self.post_comment_fn.lock().unwrap() = Box::new(move || Box::pin(f()));
+    }
+
+    pub fn post_comment_calls(&self) -> u32 {
+        *self.post_comment_calls.lock().unwrap()
+    }
 }
 
 #[async_trait]
@@ -129,6 +150,18 @@ impl super::GitBackend for MockGitBackend {
     ) -> Result<Vec<ChangedFile>, GitError> {
         *self.changed_files_calls.lock().unwrap() += 1;
         let fut = self.changed_files_fn.lock().unwrap()();
+        fut.await
+    }
+
+    async fn post_comment(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _id: u64,
+        _body: &str,
+    ) -> Result<String, GitError> {
+        *self.post_comment_calls.lock().unwrap() += 1;
+        let fut = self.post_comment_fn.lock().unwrap()();
         fut.await
     }
 
@@ -315,5 +348,58 @@ mod tests {
         assert_eq!(backend.changed_files_calls(), 1);
         backend.changed_files("owner", "repo", 1).await.unwrap();
         assert_eq!(backend.changed_files_calls(), 2);
+    }
+
+    #[tokio::test]
+    async fn returns_default_post_comment_url() {
+        let backend = MockGitBackend::new();
+        let url = backend
+            .post_comment("owner", "repo", 1, "body")
+            .await
+            .unwrap();
+        assert_eq!(url, "https://github.com/test/repo/pull/1#issuecomment-1");
+    }
+
+    #[tokio::test]
+    async fn returns_custom_post_comment_url_from_lambda() {
+        let backend = MockGitBackend::new();
+        backend.set_post_comment(|| async {
+            Ok("https://github.com/custom/repo/pull/42#issuecomment-42".to_string())
+        });
+        let url = backend
+            .post_comment("owner", "repo", 1, "body")
+            .await
+            .unwrap();
+        assert_eq!(
+            url,
+            "https://github.com/custom/repo/pull/42#issuecomment-42"
+        );
+    }
+
+    #[tokio::test]
+    async fn returns_post_comment_error_from_lambda() {
+        let backend = MockGitBackend::new();
+        backend.set_post_comment(|| async { Err(GitError::Api("boom".to_string())) });
+        let err = backend
+            .post_comment("owner", "repo", 1, "body")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, GitError::Api(_)));
+    }
+
+    #[tokio::test]
+    async fn counts_post_comment_calls() {
+        let backend = MockGitBackend::new();
+        assert_eq!(backend.post_comment_calls(), 0);
+        backend
+            .post_comment("owner", "repo", 1, "body")
+            .await
+            .unwrap();
+        assert_eq!(backend.post_comment_calls(), 1);
+        backend
+            .post_comment("owner", "repo", 1, "body")
+            .await
+            .unwrap();
+        assert_eq!(backend.post_comment_calls(), 2);
     }
 }

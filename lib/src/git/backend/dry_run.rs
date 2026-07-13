@@ -1,5 +1,6 @@
 use super::GitBackend;
 use async_trait::async_trait;
+use tracing::warn;
 
 pub struct DryRunBackend {
     inner: Box<dyn GitBackend>,
@@ -35,12 +36,24 @@ impl GitBackend for DryRunBackend {
         self.inner.changed_files(owner, repo, id).await
     }
 
+    async fn post_comment(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _id: u64,
+        _body: &str,
+    ) -> Result<String, super::super::Error> {
+        warn!(action = "post_comment", "dry run blocked mutating action");
+        Err(super::super::Error::DryRun("post_comment".to_string()))
+    }
+
     async fn delete_branch(
         &self,
         _owner: &str,
         _repo: &str,
         _branch: &str,
     ) -> Result<(), super::super::Error> {
+        warn!(action = "delete_branch", "dry run blocked mutating action");
         Err(super::super::Error::DryRun("delete_branch".to_string()))
     }
 
@@ -50,6 +63,10 @@ impl GitBackend for DryRunBackend {
         _repo: &str,
         _tag: &str,
     ) -> Result<(), super::super::Error> {
+        warn!(
+            action = "publish_release",
+            "dry run blocked mutating action"
+        );
         Err(super::super::Error::DryRun("publish_release".to_string()))
     }
 
@@ -60,6 +77,7 @@ impl GitBackend for DryRunBackend {
         _path: &str,
         _content: &[u8],
     ) -> Result<(), super::super::Error> {
+        warn!(action = "upload_file", "dry run blocked mutating action");
         Err(super::super::Error::DryRun("upload_file".to_string()))
     }
 }

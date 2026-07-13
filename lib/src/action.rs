@@ -5,6 +5,7 @@ use crate::git::{AccountType, Error as GitError};
 use crate::scanner::sensitive::SensitiveScanner;
 use std::path::Path;
 use thiserror::Error;
+use tracing::{debug, info};
 
 pub mod check;
 
@@ -28,7 +29,8 @@ impl Bofa {
     }
 
     pub fn load_config(path: impl AsRef<Path>) -> Result<Self, Error> {
-        let config = load_config(path).map_err(|err| Error::Config(err.to_string()))?;
+        let config = load_config(path.as_ref()).map_err(|err| Error::Config(err.to_string()))?;
+        info!(config_path = %path.as_ref().display(), "loaded config");
         Ok(Self::new(config))
     }
 
@@ -40,6 +42,7 @@ impl Bofa {
         self,
         backend: Box<dyn GitBackend>,
     ) -> Result<AuthenticatedBofa, Error> {
+        debug!("authenticating with provided backend");
         let backend = self.wrap_backend(backend);
         let context = GitContext::from_backend(backend);
         Ok(AuthenticatedBofa {
@@ -49,6 +52,11 @@ impl Bofa {
     }
 
     pub async fn ensure_authenticated(self) -> Result<AuthenticatedBofa, Error> {
+        info!(
+            provider = ?self.config.worker.provider,
+            dry_run = self.config.worker.dry_run,
+            "ensuring git authentication"
+        );
         let backend = create_backend(
             &self.config.credentials,
             self.config.worker.provider.clone(),
@@ -91,6 +99,7 @@ impl AuthenticatedBofa {
     }
 
     pub async fn login(&self) -> Result<String, Error> {
+        info!("fetching account metadata");
         let metadata = self.context.account_metadata().await?;
         let message = match metadata.account_type {
             AccountType::GitHubApp => {
@@ -113,30 +122,70 @@ impl AuthenticatedBofa {
         Ok(message)
     }
 
-    pub async fn check_pr(&self, id: u64) -> Result<String, Error> {
+    pub async fn check_pr(&self, id: u64) -> Result<check::pr::CheckPrOutput, Error> {
         let input = check::pr::PrInput::from_repository(id, &self.config.repository);
+        info!(
+            pr_id = id,
+            owner = %input.owner,
+            repo = %input.repo,
+            "checking pull request"
+        );
         let metadata = self
             .context
             .pull_request(&input.owner, &input.repo, input.id)
             .await?;
-        let scanner_enabled = self.config.scanner.sensitive.enabled;
-        let findings = if scanner_enabled {
+        let scanner_active = self.config.scanner.enabled && self.config.scanner.sensitive.enabled;
+        debug!(scanner_active, "scanner active");
+        let findings = if scanner_active {
             let changed_files = self
                 .context
                 .changed_files(&input.owner, &input.repo, input.id)
                 .await?;
+            info!(count = changed_files.len(), "fetched changed files");
             let scanner = SensitiveScanner::new(&self.config.scanner.sensitive)
                 .map_err(check::Error::from)?;
-            scanner.scan(&changed_files)
+            let findings = scanner.scan(&changed_files);
+            info!(count = findings.len(), "scanner completed");
+            findings
         } else {
+            debug!("scanner disabled, skipping changed files");
             Vec::new()
         };
         let result = check::pr::PrCheckResult {
             metadata,
             findings,
-            scanner_enabled,
+            scanner_enabled: scanner_active,
+            always_report: self.config.scanner.sensitive.always_report,
+            report_template: self.config.template.scanner.sensitive.report.clone(),
+            empty_report_template: self.config.template.scanner.sensitive.empty_report.clone(),
         };
-        Ok(result.to_string())
+        let rendered = result.render()?;
+        let (posted, comment_url) = if self.config.worker.post_comments {
+            if let Some(body) = &rendered {
+                info!("posting comment to pull request");
+                let url = self
+                    .context
+                    .post_comment(&input.owner, &input.repo, input.id, body)
+                    .await?;
+                (true, Some(url))
+            } else {
+                (false, None)
+            }
+        } else {
+            (false, None)
+        };
+        if posted {
+            info!(url = %comment_url.as_ref().unwrap(), "comment posted");
+        } else if rendered.is_some() {
+            info!("rendered comment, not posted");
+        } else {
+            info!("no sensitive changes detected");
+        }
+        Ok(check::pr::CheckPrOutput {
+            body: rendered,
+            posted,
+            comment_url,
+        })
     }
 }
 
@@ -160,6 +209,7 @@ mod tests {
             },
             worker: Default::default(),
             scanner: Default::default(),
+            template: Default::default(),
             log: Default::default(),
         }
     }
@@ -168,6 +218,7 @@ mod tests {
         let mut config = test_config();
         config.scanner.sensitive = SensitiveScannerConfig {
             enabled: true,
+            always_report: false,
             item: indexmap::indexmap! {
                 "core-repo".to_string() => SensitiveScannerItem {
                     description: "Core repo".to_string(),
@@ -225,15 +276,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn check_pr_formats_metadata() {
+    async fn check_pr_returns_none_when_scanner_disabled() {
         let backend = Box::new(MockGitBackend::new());
         let bofa = Bofa::new(test_config())
             .authenticate_with(backend)
             .await
             .unwrap();
         let output = bofa.check_pr(1).await.unwrap();
-        assert!(output.contains("#1"));
-        assert!(output.contains("Test PR"));
+        assert!(output.body.is_none());
+        assert!(!output.posted);
+        assert!(output.comment_url.is_none());
     }
 
     #[tokio::test]
@@ -260,18 +312,20 @@ mod tests {
             .await
             .unwrap();
         let output = bofa.check_pr(42).await.unwrap();
-        assert!(output.contains("#42 Fix bug by dave [closed]"));
-        assert!(output.contains("Core repo"));
-        assert!(output.contains("/path/to/repo1/src/main.rs"));
-        assert!(output.contains("alice"));
-        assert!(output.contains("bob"));
-        assert!(output.contains("Other"));
-        assert!(output.contains("/other/README.md"));
-        assert!(output.contains("carol"));
+        let body = output.body.unwrap();
+        assert!(body.contains("Core repo"));
+        assert!(body.contains("/path/to/repo1/src/main.rs"));
+        assert!(body.contains("alice"));
+        assert!(body.contains("bob"));
+        assert!(body.contains("Other"));
+        assert!(body.contains("/other/README.md"));
+        assert!(body.contains("carol"));
+        assert!(output.posted);
+        assert!(output.comment_url.is_some());
     }
 
     #[tokio::test]
-    async fn check_pr_reports_no_sensitive_files_changed() {
+    async fn check_pr_returns_none_when_no_sensitive_files_changed() {
         let backend = MockGitBackend::new();
         backend.set_changed_files(|| async { Ok(vec![changed_file("/unrelated/file.txt")]) });
         let bofa = Bofa::new(config_with_sensitive_scanner())
@@ -279,8 +333,9 @@ mod tests {
             .await
             .unwrap();
         let output = bofa.check_pr(42).await.unwrap();
-        assert!(output.contains("#1 Test PR by octocat [open]"));
-        assert!(output.contains("No sensitive files changed."));
+        assert!(output.body.is_none());
+        assert!(!output.posted);
+        assert!(output.comment_url.is_none());
     }
 
     #[tokio::test]
@@ -366,6 +421,91 @@ mod tests {
             .await
             .unwrap();
         let output = bofa.check_pr(1).await.unwrap();
-        assert!(output.contains("#1"));
+        assert!(output.body.is_none());
+        assert!(!output.posted);
+        assert!(output.comment_url.is_none());
+    }
+
+    #[tokio::test]
+    async fn check_pr_posts_comment_when_enabled_and_sensitive_files_found() {
+        let backend = MockGitBackend::new();
+        backend.set_pull_request(|| async {
+            Ok(PullRequestMetadata {
+                number: 42,
+                title: "Fix bug".to_string(),
+                state: "closed".to_string(),
+                author: "dave".to_string(),
+                draft: false,
+                url: "https://github.com/owner/repo/pull/42".to_string(),
+            })
+        });
+        backend
+            .set_changed_files(|| async { Ok(vec![changed_file("/path/to/repo1/src/main.rs")]) });
+        let bofa = Bofa::new(config_with_sensitive_scanner())
+            .authenticate_with(Box::new(backend))
+            .await
+            .unwrap();
+        let output = bofa.check_pr(42).await.unwrap();
+        assert!(output.body.is_some());
+        assert!(output.posted);
+        assert_eq!(
+            output.comment_url,
+            Some("https://github.com/test/repo/pull/1#issuecomment-1".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn check_pr_does_not_post_comment_when_disabled() {
+        let backend = MockGitBackend::new();
+        backend.set_pull_request(|| async {
+            Ok(PullRequestMetadata {
+                number: 42,
+                title: "Fix bug".to_string(),
+                state: "closed".to_string(),
+                author: "dave".to_string(),
+                draft: false,
+                url: "https://github.com/owner/repo/pull/42".to_string(),
+            })
+        });
+        backend
+            .set_changed_files(|| async { Ok(vec![changed_file("/path/to/repo1/src/main.rs")]) });
+        let mut config = config_with_sensitive_scanner();
+        config.worker.post_comments = false;
+        let bofa = Bofa::new(config)
+            .authenticate_with(Box::new(backend))
+            .await
+            .unwrap();
+        let output = bofa.check_pr(42).await.unwrap();
+        assert!(output.body.is_some());
+        assert!(!output.posted);
+        assert!(output.comment_url.is_none());
+    }
+
+    #[tokio::test]
+    async fn check_pr_does_not_scan_when_scanner_master_disabled() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let call_count = Arc::new(AtomicU32::new(0));
+        let call_count_clone = Arc::clone(&call_count);
+        let backend = MockGitBackend::new();
+        backend.set_changed_files(move || {
+            let call_count = Arc::clone(&call_count_clone);
+            async move {
+                call_count.fetch_add(1, Ordering::SeqCst);
+                Ok(vec![changed_file("/path/to/repo1/src/main.rs")])
+            }
+        });
+        let mut config = config_with_sensitive_scanner();
+        config.scanner.enabled = false;
+        let bofa = Bofa::new(config)
+            .authenticate_with(Box::new(backend))
+            .await
+            .unwrap();
+        let output = bofa.check_pr(42).await.unwrap();
+        assert!(output.body.is_none());
+        assert!(!output.posted);
+        assert!(output.comment_url.is_none());
+        assert_eq!(call_count.load(Ordering::SeqCst), 0);
     }
 }

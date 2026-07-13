@@ -8,4 +8,6 @@ pub enum Error {
     InvalidIdentifier(String),
     #[error("scanner error: {0}")]
     Scanner(#[from] crate::scanner::sensitive::Error),
+    #[error("template error: {0}")]
+    Template(String),
 }

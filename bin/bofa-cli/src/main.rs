@@ -54,11 +54,15 @@ async fn main() {
             command: CheckCommands::Pr { id },
         } => {
             let bofa = authenticate(bofa).await;
-            let message = bofa.check_pr(id).await.unwrap_or_else(|err| {
+            let result = bofa.check_pr(id).await.unwrap_or_else(|err| {
                 eprintln!("Check failed: {err}");
                 std::process::exit(1);
             });
-            println!("{message}");
+            if result.posted {
+                println!("{}", result.comment_url.unwrap());
+            } else if let Some(body) = result.body {
+                println!("{body}");
+            }
         }
     }
 }

@@ -1,0 +1,8 @@
+Scanner found {{ findings | length }} sensitive groups being changed:
+{% for finding in findings -%}
+- {{ finding.name }}: {{ finding.description }}
+  Affected files:
+{% for path in finding.matched_paths %}  - `{{ path }}`
+{% endfor %}
+  cc {% for person in finding.related_persons %}@{{ person }}{% if not loop.last %} {% endif %}{% endfor %}
+{% endfor -%}

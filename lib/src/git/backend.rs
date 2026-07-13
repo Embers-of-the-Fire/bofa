@@ -22,6 +22,13 @@ pub trait GitBackend: Send + Sync {
         repo: &str,
         id: u64,
     ) -> Result<Vec<super::ChangedFile>, super::Error>;
+    async fn post_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        id: u64,
+        body: &str,
+    ) -> Result<String, super::Error>;
     async fn delete_branch(
         &self,
         owner: &str,

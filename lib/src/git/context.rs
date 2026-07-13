@@ -35,6 +35,17 @@ impl GitContext {
         self.backend.changed_files(owner, repo, id).await
     }
 
+    #[instrument(skip(self, body), fields(owner, repo, id), err)]
+    pub async fn post_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        id: u64,
+        body: &str,
+    ) -> Result<String, super::Error> {
+        self.backend.post_comment(owner, repo, id, body).await
+    }
+
     #[instrument(skip(self), fields(owner, repo, branch), err)]
     pub async fn delete_branch(
         &self,

@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 pub struct SensitiveScannerConfig {
     pub enabled: bool,
+    #[serde(default)]
+    pub always_report: bool,
     #[serde(flatten, default)]
     pub item: IndexMap<String, SensitiveScannerItem>,
 }

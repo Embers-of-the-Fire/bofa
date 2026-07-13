@@ -18,6 +18,7 @@ fn test_config() -> BofaConfig {
         },
         worker: Default::default(),
         scanner: Default::default(),
+        template: Default::default(),
         log: Default::default(),
     }
 }
@@ -26,6 +27,7 @@ fn config_with_sensitive_scanner() -> BofaConfig {
     let mut config = test_config();
     config.scanner.sensitive = SensitiveScannerConfig {
         enabled: true,
+        always_report: false,
         item: indexmap::indexmap! {
             "core-repo".to_string() => SensitiveScannerItem {
                 description: "Core repo".to_string(),
@@ -50,7 +52,7 @@ fn changed_file(path: &str) -> ChangedFile {
 }
 
 #[tokio::test]
-async fn check_pr_returns_short_metadata() {
+async fn check_pr_returns_none_when_scanner_disabled() {
     let backend = MockGitBackend::new();
     backend.set_pull_request(|| async {
         Ok(PullRequestMetadata {
@@ -67,10 +69,9 @@ async fn check_pr_returns_short_metadata() {
         .await
         .unwrap();
     let output = bofa.check_pr(42).await.unwrap();
-    assert_eq!(
-        output,
-        "#42 Fix bug by alice [closed] https://github.com/owner/repo/pull/42"
-    );
+    assert!(output.body.is_none());
+    assert!(!output.posted);
+    assert!(output.comment_url.is_none());
 }
 
 #[tokio::test]
@@ -86,6 +87,62 @@ async fn check_pr_propagates_backend_error() {
         err,
         bofa_lib::action::Error::Git(bofa_lib::git::Error::Api(_))
     ));
+}
+
+fn config_with_sensitive_scanner_always_report() -> BofaConfig {
+    let mut config = config_with_sensitive_scanner();
+    config.scanner.sensitive.always_report = true;
+    config
+}
+
+#[tokio::test]
+async fn check_pr_returns_default_empty_report_when_always_report_enabled_and_no_sensitive_files() {
+    let backend = MockGitBackend::new();
+    backend.set_pull_request(|| async {
+        Ok(PullRequestMetadata {
+            number: 42,
+            title: "Fix bug".to_string(),
+            state: "closed".to_string(),
+            author: "dave".to_string(),
+            draft: false,
+            url: "https://github.com/owner/repo/pull/42".to_string(),
+        })
+    });
+    backend.set_changed_files(|| async { Ok(vec![changed_file("/unrelated/file.txt")]) });
+    let bofa = Bofa::new(config_with_sensitive_scanner_always_report())
+        .authenticate_with(Box::new(backend))
+        .await
+        .unwrap();
+    let output = bofa.check_pr(42).await.unwrap();
+    assert_eq!(output.body.unwrap(), "No sensitive files found.");
+    assert!(output.posted);
+    assert!(output.comment_url.is_some());
+}
+
+#[tokio::test]
+async fn check_pr_returns_custom_empty_report_when_configured() {
+    let mut config = config_with_sensitive_scanner_always_report();
+    config.template.scanner.sensitive.empty_report = Some("All clear.".to_string());
+    let backend = MockGitBackend::new();
+    backend.set_pull_request(|| async {
+        Ok(PullRequestMetadata {
+            number: 42,
+            title: "Fix bug".to_string(),
+            state: "closed".to_string(),
+            author: "dave".to_string(),
+            draft: false,
+            url: "https://github.com/owner/repo/pull/42".to_string(),
+        })
+    });
+    backend.set_changed_files(|| async { Ok(vec![changed_file("/unrelated/file.txt")]) });
+    let bofa = Bofa::new(config)
+        .authenticate_with(Box::new(backend))
+        .await
+        .unwrap();
+    let output = bofa.check_pr(42).await.unwrap();
+    assert_eq!(output.body.unwrap(), "All clear.");
+    assert!(output.posted);
+    assert!(output.comment_url.is_some());
 }
 
 #[tokio::test]
@@ -112,17 +169,20 @@ async fn check_pr_reports_sensitive_files_and_related_persons() {
         .await
         .unwrap();
     let output = bofa.check_pr(42).await.unwrap();
-    assert!(output.contains("Core repo"));
-    assert!(output.contains("/path/to/repo1/src/main.rs"));
-    assert!(output.contains("alice"));
-    assert!(output.contains("bob"));
-    assert!(output.contains("Other"));
-    assert!(output.contains("/other/README.md"));
-    assert!(output.contains("carol"));
+    let body = output.body.unwrap();
+    assert!(body.contains("Core repo"));
+    assert!(body.contains("/path/to/repo1/src/main.rs"));
+    assert!(body.contains("alice"));
+    assert!(body.contains("bob"));
+    assert!(body.contains("Other"));
+    assert!(body.contains("/other/README.md"));
+    assert!(body.contains("carol"));
+    assert!(output.posted);
+    assert!(output.comment_url.is_some());
 }
 
 #[tokio::test]
-async fn check_pr_reports_no_sensitive_files_changed() {
+async fn check_pr_returns_none_when_no_sensitive_files_changed() {
     let backend = MockGitBackend::new();
     backend.set_changed_files(|| async { Ok(vec![changed_file("/unrelated/file.txt")]) });
     let bofa = Bofa::new(config_with_sensitive_scanner())
@@ -130,7 +190,9 @@ async fn check_pr_reports_no_sensitive_files_changed() {
         .await
         .unwrap();
     let output = bofa.check_pr(42).await.unwrap();
-    assert!(output.contains("No sensitive files changed."));
+    assert!(output.body.is_none());
+    assert!(!output.posted);
+    assert!(output.comment_url.is_none());
 }
 
 #[tokio::test]
@@ -177,4 +239,57 @@ async fn check_pr_does_not_call_changed_files_when_scanner_disabled() {
         .unwrap();
     bofa.check_pr(42).await.unwrap();
     assert_eq!(call_count.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn check_pr_posts_comment_and_returns_url_when_enabled() {
+    let backend = MockGitBackend::new();
+    backend.set_pull_request(|| async {
+        Ok(PullRequestMetadata {
+            number: 42,
+            title: "Fix bug".to_string(),
+            state: "closed".to_string(),
+            author: "dave".to_string(),
+            draft: false,
+            url: "https://github.com/owner/repo/pull/42".to_string(),
+        })
+    });
+    backend.set_changed_files(|| async { Ok(vec![changed_file("/path/to/repo1/src/main.rs")]) });
+    let bofa = Bofa::new(config_with_sensitive_scanner())
+        .authenticate_with(Box::new(backend))
+        .await
+        .unwrap();
+    let output = bofa.check_pr(42).await.unwrap();
+    assert!(output.body.is_some());
+    assert!(output.posted);
+    assert_eq!(
+        output.comment_url,
+        Some("https://github.com/test/repo/pull/1#issuecomment-1".to_string())
+    );
+}
+
+#[tokio::test]
+async fn check_pr_does_not_post_comment_when_disabled() {
+    let backend = MockGitBackend::new();
+    backend.set_pull_request(|| async {
+        Ok(PullRequestMetadata {
+            number: 42,
+            title: "Fix bug".to_string(),
+            state: "closed".to_string(),
+            author: "dave".to_string(),
+            draft: false,
+            url: "https://github.com/owner/repo/pull/42".to_string(),
+        })
+    });
+    backend.set_changed_files(|| async { Ok(vec![changed_file("/path/to/repo1/src/main.rs")]) });
+    let mut config = config_with_sensitive_scanner();
+    config.worker.post_comments = false;
+    let bofa = Bofa::new(config)
+        .authenticate_with(Box::new(backend))
+        .await
+        .unwrap();
+    let output = bofa.check_pr(42).await.unwrap();
+    assert!(output.body.is_some());
+    assert!(!output.posted);
+    assert!(output.comment_url.is_none());
 }

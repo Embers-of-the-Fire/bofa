@@ -11,6 +11,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as Base64Engine;
 use octocrab::Octocrab;
 use octocrab::models::repos::{DiffEntry, DiffEntryStatus};
+use tracing::{info, instrument, warn};
 
 pub struct GitHubBackend {
     client: Octocrab,
@@ -20,7 +21,12 @@ pub struct GitHubBackend {
 }
 
 impl GitHubBackend {
+    #[instrument(skip(credentials), err)]
     pub async fn authenticate(credentials: &Credentials) -> Result<Self, GitError> {
+        info!(
+            credentials = credentials.describe(),
+            "authenticating with GitHub"
+        );
         match credentials {
             Credentials::App(creds) => {
                 let (client, app_metadata, installation_metadata) =
@@ -62,9 +68,15 @@ impl GitHubBackend {
         }
     }
 
+    #[instrument(skip(creds), err)]
     async fn authenticate_app(
         creds: &AppCredentials,
     ) -> Result<(Octocrab, AccountMetadata, AccountMetadata), GitError> {
+        info!(
+            app_id = %creds.app_id.name(),
+            installation_id = creds.installation_id.as_ref().map(|s| s.name()),
+            "authenticating GitHub App"
+        );
         let app_id = creds
             .app_id
             .resolve()
@@ -89,12 +101,12 @@ impl GitHubBackend {
         let app_client = Octocrab::builder()
             .app(app_id, key)
             .build()
-            .map_err(|e| GitError::Api(e.to_string()))?;
+            .map_err(|e| GitError::Api(format!("{e:?}")))?;
 
         let app: octocrab::models::App = app_client
             .get("/app", None::<&()>)
             .await
-            .map_err(|e| GitError::Api(e.to_string()))?;
+            .map_err(|e| GitError::Api(format!("{e:?}")))?;
         let app_metadata = account_metadata_from_app(&app);
 
         let installation = match creds.installation_id {
@@ -108,7 +120,7 @@ impl GitHubBackend {
                 app_client
                     .get(route, None::<&()>)
                     .await
-                    .map_err(|e| GitError::Api(e.to_string()))?
+                    .map_err(|e| GitError::Api(format!("{e:?}")))?
             }
             None => {
                 let installations = app_client
@@ -116,7 +128,7 @@ impl GitHubBackend {
                     .installations()
                     .send()
                     .await
-                    .map_err(|e| GitError::Api(e.to_string()))?
+                    .map_err(|e| GitError::Api(format!("{e:?}")))?
                     .take_items();
                 installations.into_iter().next().ok_or_else(|| {
                     GitError::Authentication("no installation found for GitHub App".to_string())
@@ -128,11 +140,13 @@ impl GitHubBackend {
 
         let client = app_client
             .installation(installation_id)
-            .map_err(|e| GitError::Api(e.to_string()))?;
+            .map_err(|e| GitError::Api(format!("{e:?}")))?;
         Ok((client, app_metadata, installation_metadata))
     }
 
+    #[instrument(skip(creds), err)]
     fn authenticate_account(creds: &AccountCredentials) -> Result<Octocrab, GitError> {
+        info!(username = %creds.username.name(), "authenticating GitHub account");
         let username = creds
             .username
             .resolve()
@@ -144,12 +158,14 @@ impl GitHubBackend {
         Octocrab::builder()
             .basic_auth(username, password)
             .build()
-            .map_err(|e| GitError::Api(e.to_string()))
+            .map_err(|e| GitError::Api(format!("{e:?}")))
     }
 
+    #[instrument(skip(creds), err)]
     fn authenticate_user_access_token(
         creds: &UserAccessTokenCredentials,
     ) -> Result<Octocrab, GitError> {
+        info!("authenticating with GitHub user access token");
         let token = creds
             .token
             .resolve()
@@ -157,10 +173,12 @@ impl GitHubBackend {
         Octocrab::builder()
             .user_access_token(token)
             .build()
-            .map_err(|e| GitError::Api(e.to_string()))
+            .map_err(|e| GitError::Api(format!("{e:?}")))
     }
 
+    #[instrument(skip(creds), err)]
     fn authenticate_personal_token(creds: &PersonalTokenCredentials) -> Result<Octocrab, GitError> {
+        info!("authenticating with GitHub personal token");
         let token = creds
             .token
             .resolve()
@@ -168,12 +186,13 @@ impl GitHubBackend {
         Octocrab::builder()
             .personal_token(token)
             .build()
-            .map_err(|e| GitError::Api(e.to_string()))
+            .map_err(|e| GitError::Api(format!("{e:?}")))
     }
 }
 
 #[async_trait]
 impl super::GitBackend for GitHubBackend {
+    #[instrument(skip(self), err)]
     async fn account_metadata(&self) -> Result<AccountMetadata, GitError> {
         match &self.credentials {
             Credentials::App(_) => {
@@ -184,12 +203,13 @@ impl super::GitBackend for GitHubBackend {
                 Ok(app_metadata)
             }
             _ => {
+                info!("fetching GitHub account metadata");
                 let author = self
                     .client
                     .current()
                     .user()
                     .await
-                    .map_err(|e| GitError::Api(e.to_string()))?;
+                    .map_err(|e| GitError::Api(format!("{e:?}")))?;
                 let author_account_type = account_type_from_author(&author);
                 Ok(AccountMetadata {
                     id: *author.id,
@@ -201,18 +221,20 @@ impl super::GitBackend for GitHubBackend {
         }
     }
 
+    #[instrument(skip(self), fields(owner, repo, id), err)]
     async fn pull_request(
         &self,
         owner: &str,
         repo: &str,
         id: u64,
     ) -> Result<PullRequestMetadata, GitError> {
+        info!(owner, repo, id, "fetching GitHub pull request");
         let pr = self
             .client
             .pulls(owner, repo)
             .get(id)
             .await
-            .map_err(|e| GitError::Api(e.to_string()))?;
+            .map_err(|e| GitError::Api(format!("{e:?}")))?;
         let state = pr
             .state
             .map(|s| match s {
@@ -228,6 +250,12 @@ impl super::GitBackend for GitHubBackend {
             .unwrap_or_else(|| "unknown".to_string());
         let title = pr.title.unwrap_or_default();
         let url = pr.html_url.map(|url| url.to_string()).unwrap_or(pr.url);
+        info!(
+            number = pr.number,
+            title = %title,
+            state = %state,
+            "fetched GitHub pull request"
+        );
         Ok(PullRequestMetadata {
             number: pr.number,
             title,
@@ -238,18 +266,20 @@ impl super::GitBackend for GitHubBackend {
         })
     }
 
+    #[instrument(skip(self), fields(owner, repo, id), err)]
     async fn changed_files(
         &self,
         owner: &str,
         repo: &str,
         id: u64,
     ) -> Result<Vec<ChangedFile>, GitError> {
+        info!(owner, repo, id, "fetching GitHub changed files");
         let first_page = self
             .client
             .pulls(owner, repo)
             .list_files(id)
             .await
-            .map_err(|e| GitError::Api(e.to_string()))?;
+            .map_err(|e| GitError::Api(format!("{e:?}")))?;
 
         // FIXME: GitHub's PR files endpoint returns at most 3000 files. If a PR
         // exceeds that limit, we silently truncate here. Defer a workaround
@@ -258,27 +288,53 @@ impl super::GitBackend for GitHubBackend {
             .client
             .all_pages(first_page)
             .await
-            .map_err(|e| GitError::Api(e.to_string()))?;
+            .map_err(|e| GitError::Api(format!("{e:?}")))?;
 
+        info!(count = entries.len(), "fetched GitHub changed files");
         Ok(entries
             .into_iter()
             .map(changed_file_from_diff_entry)
             .collect())
     }
 
+    #[instrument(skip(self, body), fields(owner, repo, id), err)]
+    async fn post_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        id: u64,
+        body: &str,
+    ) -> Result<String, GitError> {
+        info!(owner, repo, id, "posting comment on pull request");
+        let comment = self
+            .client
+            .issues(owner, repo)
+            .create_comment(id, body)
+            .await
+            .map_err(|e| GitError::Api(format!("{e:?}")))?;
+        let url = comment.html_url.to_string();
+        info!(url = %url, "posted comment on pull request");
+        Ok(url)
+    }
+
+    #[instrument(skip(self), fields(owner, repo, branch), err)]
     async fn delete_branch(
         &self,
         _owner: &str,
         _repo: &str,
         _branch: &str,
     ) -> Result<(), GitError> {
+        warn!("delete_branch is not supported by the GitHub backend");
         Err(GitError::Unsupported("delete_branch".to_string()))
     }
 
+    #[instrument(skip(self), fields(owner, repo, tag), err)]
     async fn publish_release(&self, _owner: &str, _repo: &str, _tag: &str) -> Result<(), GitError> {
+        warn!("publish_release is not supported by the GitHub backend");
         Err(GitError::Unsupported("publish_release".to_string()))
     }
 
+    #[instrument(skip(self, _content), fields(owner, repo, path), err)]
     async fn upload_file(
         &self,
         _owner: &str,
@@ -286,6 +342,7 @@ impl super::GitBackend for GitHubBackend {
         _path: &str,
         _content: &[u8],
     ) -> Result<(), GitError> {
+        warn!("upload_file is not supported by the GitHub backend");
         Err(GitError::Unsupported("upload_file".to_string()))
     }
 }
