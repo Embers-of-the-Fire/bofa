@@ -395,9 +395,16 @@ impl super::GitBackend for GitHubBackend {
 fn account_metadata_from_app(app: &octocrab::models::App) -> AccountMetadata {
     AccountMetadata {
         id: *app.id,
-        login: app.name.clone(),
+        login: app_comment_author_login(app.slug.as_deref(), &app.name),
         account_type: AccountType::GitHubApp,
         installation: None,
+    }
+}
+
+fn app_comment_author_login(slug: Option<&str>, name: &str) -> String {
+    match slug {
+        Some(slug) => format!("{slug}[bot]"),
+        None => name.to_string(),
     }
 }
 
@@ -485,5 +492,18 @@ mod tests {
             file_change_status_from(&DiffEntryStatus::Unchanged),
             FileChangeStatus::Unknown
         );
+    }
+
+    #[test]
+    fn app_comment_author_login_uses_bot_slug() {
+        assert_eq!(
+            app_comment_author_login(Some("bofa"), "Bofa App"),
+            "bofa[bot]"
+        );
+    }
+
+    #[test]
+    fn app_comment_author_login_falls_back_to_name_without_slug() {
+        assert_eq!(app_comment_author_login(None, "Bofa App"), "Bofa App");
     }
 }
