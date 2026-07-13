@@ -3,6 +3,7 @@ use crate::git::backend::{GitBackend, create_backend, dry_run::DryRunBackend};
 use crate::git::context::GitContext;
 use crate::git::{AccountType, Error as GitError};
 use crate::scanner::sensitive::SensitiveScanner;
+use check::pr::{CommentStatus, attach_marker, content_unchanged, has_marker};
 use std::path::Path;
 use thiserror::Error;
 use tracing::{debug, info, warn};
@@ -154,14 +155,21 @@ impl AuthenticatedBofa {
         let footnote_template = self.config.template.comment.footnote.clone();
         let will_report =
             !findings.is_empty() || (scanner_active && self.config.scanner.sensitive.always_report);
-        let app_name = if will_report && footnote_template.as_deref() != Some("") {
+        let footnote_needs_name = will_report && footnote_template.as_deref() != Some("");
+        let posting_needs_name = will_report && self.config.worker.post_comments;
+        let account_login = if footnote_needs_name || posting_needs_name {
             match self.context.account_metadata().await {
                 Ok(metadata) => Some(metadata.login),
                 Err(err) => {
-                    warn!(error = %err, "failed to resolve account name for comment footnote");
+                    warn!(error = %err, "failed to resolve account metadata");
                     None
                 }
             }
+        } else {
+            None
+        };
+        let app_name = if footnote_needs_name {
+            account_login.clone()
         } else {
             None
         };
@@ -176,30 +184,72 @@ impl AuthenticatedBofa {
             app_name,
         };
         let rendered = result.render()?;
-        let (posted, comment_url) = if self.config.worker.post_comments {
+        let (status, comment_url) = if self.config.worker.post_comments {
             if let Some(body) = &rendered {
-                info!("posting comment to pull request");
-                let url = self
+                let comments = self
                     .context
-                    .post_comment(&input.owner, &input.repo, input.id, body)
+                    .list_comments(&input.owner, &input.repo, input.id)
                     .await?;
-                (true, Some(url))
+                let existing = comments
+                    .into_iter()
+                    .filter(|comment| {
+                        has_marker(&comment.body)
+                            && account_login
+                                .as_ref()
+                                .is_none_or(|me| &comment.author_login == me)
+                    })
+                    .max_by_key(|comment| comment.id);
+                match existing {
+                    None => {
+                        info!("posting new comment to pull request");
+                        let url = self
+                            .context
+                            .post_comment(&input.owner, &input.repo, input.id, &attach_marker(body))
+                            .await?;
+                        (CommentStatus::Created, Some(url))
+                    }
+                    Some(comment) if content_unchanged(&comment.body, body) => {
+                        info!("comment unchanged, skipping update");
+                        (CommentStatus::Unchanged, Some(comment.url))
+                    }
+                    Some(comment) => {
+                        info!("updating existing comment on pull request");
+                        let url = self
+                            .context
+                            .update_comment(
+                                &input.owner,
+                                &input.repo,
+                                comment.id,
+                                &attach_marker(body),
+                            )
+                            .await?;
+                        (CommentStatus::Updated, Some(url))
+                    }
+                }
             } else {
-                (false, None)
+                (CommentStatus::Skipped, None)
             }
         } else {
-            (false, None)
+            (CommentStatus::Skipped, None)
         };
-        if posted {
-            info!(url = %comment_url.as_ref().unwrap(), "comment posted");
-        } else if rendered.is_some() {
-            info!("rendered comment, not posted");
-        } else {
-            info!("no sensitive changes detected");
+        match status {
+            CommentStatus::Created => {
+                info!(url = %comment_url.as_ref().unwrap(), "comment created")
+            }
+            CommentStatus::Updated => {
+                info!(url = %comment_url.as_ref().unwrap(), "comment updated")
+            }
+            CommentStatus::Unchanged => {
+                info!(url = %comment_url.as_ref().unwrap(), "comment unchanged")
+            }
+            CommentStatus::Skipped if rendered.is_some() => {
+                info!("rendered comment, not posted")
+            }
+            CommentStatus::Skipped => info!("no sensitive changes detected"),
         }
         Ok(check::pr::CheckPrOutput {
             body: rendered,
-            posted,
+            status,
             comment_url,
         })
     }
@@ -258,6 +308,23 @@ mod tests {
         }
     }
 
+    fn config_with_always_report() -> BofaConfig {
+        let mut config = config_with_sensitive_scanner();
+        config.scanner.sensitive.always_report = true;
+        config
+    }
+
+    const EMPTY_REPORT_RENDERED: &str = "No sensitive files found.\n\n<sub>\nThis comment is generated by [bofa](https://github.com/Embers-of-the-Fire/bofa), commented by octocat.\n</sub>";
+
+    fn marked_comment(id: u64, author: &str, rendered: &str) -> crate::git::IssueComment {
+        crate::git::IssueComment {
+            id,
+            body: attach_marker(rendered),
+            author_login: author.to_string(),
+            url: format!("https://github.com/owner/repo/pull/42#issuecomment-{id}"),
+        }
+    }
+
     #[tokio::test]
     async fn login_propagates_backend_error() {
         let backend = Box::new(MockGitBackend::with_account_metadata(|| async {
@@ -300,7 +367,7 @@ mod tests {
             .unwrap();
         let output = bofa.check_pr(1).await.unwrap();
         assert!(output.body.is_none());
-        assert!(!output.posted);
+        assert_eq!(output.status, CommentStatus::Skipped);
         assert!(output.comment_url.is_none());
     }
 
@@ -336,7 +403,7 @@ mod tests {
         assert!(body.contains("Other"));
         assert!(body.contains("/other/README.md"));
         assert!(body.contains("carol"));
-        assert!(output.posted);
+        assert_eq!(output.status, CommentStatus::Created);
         assert!(output.comment_url.is_some());
     }
 
@@ -350,7 +417,7 @@ mod tests {
             .unwrap();
         let output = bofa.check_pr(42).await.unwrap();
         assert!(output.body.is_none());
-        assert!(!output.posted);
+        assert_eq!(output.status, CommentStatus::Skipped);
         assert!(output.comment_url.is_none());
     }
 
@@ -438,7 +505,7 @@ mod tests {
             .unwrap();
         let output = bofa.check_pr(1).await.unwrap();
         assert!(output.body.is_none());
-        assert!(!output.posted);
+        assert_eq!(output.status, CommentStatus::Skipped);
         assert!(output.comment_url.is_none());
     }
 
@@ -463,7 +530,7 @@ mod tests {
             .unwrap();
         let output = bofa.check_pr(42).await.unwrap();
         assert!(output.body.is_some());
-        assert!(output.posted);
+        assert_eq!(output.status, CommentStatus::Created);
         assert_eq!(
             output.comment_url,
             Some("https://github.com/test/repo/pull/1#issuecomment-1".to_string())
@@ -493,7 +560,7 @@ mod tests {
             .unwrap();
         let output = bofa.check_pr(42).await.unwrap();
         assert!(output.body.is_some());
-        assert!(!output.posted);
+        assert_eq!(output.status, CommentStatus::Skipped);
         assert!(output.comment_url.is_none());
     }
 
@@ -520,8 +587,153 @@ mod tests {
             .unwrap();
         let output = bofa.check_pr(42).await.unwrap();
         assert!(output.body.is_none());
-        assert!(!output.posted);
+        assert_eq!(output.status, CommentStatus::Skipped);
         assert!(output.comment_url.is_none());
         assert_eq!(call_count.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn check_pr_skips_update_when_comment_unchanged() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let backend = MockGitBackend::new();
+        backend.set_changed_files(|| async { Ok(vec![changed_file("/unrelated/file.txt")]) });
+        backend.set_list_comments(|| async {
+            Ok(vec![marked_comment(7, "octocat", EMPTY_REPORT_RENDERED)])
+        });
+        let post_calls = Arc::new(AtomicU32::new(0));
+        let update_calls = Arc::new(AtomicU32::new(0));
+        let pc = Arc::clone(&post_calls);
+        backend.set_post_comment(move || {
+            let pc = Arc::clone(&pc);
+            async move {
+                pc.fetch_add(1, Ordering::SeqCst);
+                Ok("https://created".to_string())
+            }
+        });
+        let uc = Arc::clone(&update_calls);
+        backend.set_update_comment(move || {
+            let uc = Arc::clone(&uc);
+            async move {
+                uc.fetch_add(1, Ordering::SeqCst);
+                Ok("https://updated".to_string())
+            }
+        });
+        let bofa = Bofa::new(config_with_always_report())
+            .authenticate_with(Box::new(backend))
+            .await
+            .unwrap();
+        let output = bofa.check_pr(42).await.unwrap();
+        assert_eq!(output.status, CommentStatus::Unchanged);
+        assert_eq!(
+            output.comment_url,
+            Some("https://github.com/owner/repo/pull/42#issuecomment-7".to_string())
+        );
+        assert_eq!(post_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(update_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn check_pr_updates_existing_marked_comment_when_content_changes() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let backend = MockGitBackend::new();
+        backend.set_changed_files(|| async { Ok(vec![changed_file("/unrelated/file.txt")]) });
+        backend
+            .set_list_comments(|| async { Ok(vec![marked_comment(7, "octocat", "stale report")]) });
+        let post_calls = Arc::new(AtomicU32::new(0));
+        let pc = Arc::clone(&post_calls);
+        backend.set_post_comment(move || {
+            let pc = Arc::clone(&pc);
+            async move {
+                pc.fetch_add(1, Ordering::SeqCst);
+                Ok("https://created".to_string())
+            }
+        });
+        backend.set_update_comment(|| async {
+            Ok("https://github.com/owner/repo/pull/42#issuecomment-7".to_string())
+        });
+        let bofa = Bofa::new(config_with_always_report())
+            .authenticate_with(Box::new(backend))
+            .await
+            .unwrap();
+        let output = bofa.check_pr(42).await.unwrap();
+        assert_eq!(output.status, CommentStatus::Updated);
+        assert_eq!(
+            output.comment_url,
+            Some("https://github.com/owner/repo/pull/42#issuecomment-7".to_string())
+        );
+        assert_eq!(post_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn check_pr_creates_new_comment_when_existing_comment_lacks_marker() {
+        let backend = MockGitBackend::new();
+        backend.set_changed_files(|| async { Ok(vec![changed_file("/unrelated/file.txt")]) });
+        backend.set_list_comments(|| async {
+            Ok(vec![crate::git::IssueComment {
+                id: 3,
+                body: "a human comment".to_string(),
+                author_login: "octocat".to_string(),
+                url: "https://github.com/owner/repo/pull/42#issuecomment-3".to_string(),
+            }])
+        });
+        let bofa = Bofa::new(config_with_always_report())
+            .authenticate_with(Box::new(backend))
+            .await
+            .unwrap();
+        let output = bofa.check_pr(42).await.unwrap();
+        assert_eq!(output.status, CommentStatus::Created);
+        assert_eq!(
+            output.comment_url,
+            Some("https://github.com/test/repo/pull/1#issuecomment-1".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn check_pr_creates_new_comment_when_marked_comment_is_from_another_author() {
+        let backend = MockGitBackend::new();
+        backend.set_changed_files(|| async { Ok(vec![changed_file("/unrelated/file.txt")]) });
+        backend.set_list_comments(|| async {
+            Ok(vec![marked_comment(
+                9,
+                "someone-else",
+                EMPTY_REPORT_RENDERED,
+            )])
+        });
+        let bofa = Bofa::new(config_with_always_report())
+            .authenticate_with(Box::new(backend))
+            .await
+            .unwrap();
+        let output = bofa.check_pr(42).await.unwrap();
+        assert_eq!(output.status, CommentStatus::Created);
+        assert_eq!(
+            output.comment_url,
+            Some("https://github.com/test/repo/pull/1#issuecomment-1".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn check_pr_updates_most_recent_marked_comment() {
+        let backend = MockGitBackend::new();
+        backend.set_changed_files(|| async { Ok(vec![changed_file("/unrelated/file.txt")]) });
+        backend.set_list_comments(|| async {
+            Ok(vec![
+                marked_comment(2, "octocat", "stale report"),
+                marked_comment(5, "octocat", EMPTY_REPORT_RENDERED),
+            ])
+        });
+        let bofa = Bofa::new(config_with_always_report())
+            .authenticate_with(Box::new(backend))
+            .await
+            .unwrap();
+        let output = bofa.check_pr(42).await.unwrap();
+        assert_eq!(output.status, CommentStatus::Unchanged);
+        assert_eq!(
+            output.comment_url,
+            Some("https://github.com/owner/repo/pull/42#issuecomment-5".to_string())
+        );
     }
 }

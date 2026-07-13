@@ -53,15 +53,27 @@ async fn main() {
         Commands::Check {
             command: CheckCommands::Pr { id },
         } => {
+            use bofa_lib::action::check::pr::CommentStatus;
             let bofa = authenticate(bofa).await;
             let result = bofa.check_pr(id).await.unwrap_or_else(|err| {
                 eprintln!("Check failed: {err}");
                 std::process::exit(1);
             });
-            if result.posted {
-                println!("{}", result.comment_url.unwrap());
-            } else if let Some(body) = result.body {
-                println!("{body}");
+            match result.status {
+                CommentStatus::Created => {
+                    println!("Created comment: {}", result.comment_url.unwrap());
+                }
+                CommentStatus::Updated => {
+                    println!("Updated comment: {}", result.comment_url.unwrap());
+                }
+                CommentStatus::Unchanged => {
+                    println!("Comment up to date: {}", result.comment_url.unwrap());
+                }
+                CommentStatus::Skipped => {
+                    if let Some(body) = result.body {
+                        println!("{body}");
+                    }
+                }
             }
         }
     }

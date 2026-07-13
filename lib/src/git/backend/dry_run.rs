@@ -47,6 +47,26 @@ impl GitBackend for DryRunBackend {
         Err(super::super::Error::DryRun("post_comment".to_string()))
     }
 
+    async fn list_comments(
+        &self,
+        owner: &str,
+        repo: &str,
+        id: u64,
+    ) -> Result<Vec<super::super::IssueComment>, super::super::Error> {
+        self.inner.list_comments(owner, repo, id).await
+    }
+
+    async fn update_comment(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _comment_id: u64,
+        _body: &str,
+    ) -> Result<String, super::super::Error> {
+        warn!(action = "update_comment", "dry run blocked mutating action");
+        Err(super::super::Error::DryRun("update_comment".to_string()))
+    }
+
     async fn delete_branch(
         &self,
         _owner: &str,

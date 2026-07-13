@@ -3,7 +3,7 @@ use crate::config::credentials::{
     UserAccessTokenCredentials,
 };
 use crate::git::{
-    AccountMetadata, AccountType, ChangedFile, Error as GitError, FileChangeStatus,
+    AccountMetadata, AccountType, ChangedFile, Error as GitError, FileChangeStatus, IssueComment,
     PullRequestMetadata,
 };
 use async_trait::async_trait;
@@ -317,6 +317,51 @@ impl super::GitBackend for GitHubBackend {
         Ok(url)
     }
 
+    #[instrument(skip(self), fields(owner, repo, id), err)]
+    async fn list_comments(
+        &self,
+        owner: &str,
+        repo: &str,
+        id: u64,
+    ) -> Result<Vec<IssueComment>, GitError> {
+        info!(owner, repo, id, "listing comments on pull request");
+        let first_page = self
+            .client
+            .issues(owner, repo)
+            .list_comments(id)
+            .per_page(100)
+            .send()
+            .await
+            .map_err(|e| GitError::Api(format!("{e:?}")))?;
+        let comments = self
+            .client
+            .all_pages(first_page)
+            .await
+            .map_err(|e| GitError::Api(format!("{e:?}")))?;
+        info!(count = comments.len(), "listed comments on pull request");
+        Ok(comments.into_iter().map(issue_comment_from).collect())
+    }
+
+    #[instrument(skip(self, body), fields(owner, repo, comment_id), err)]
+    async fn update_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        comment_id: u64,
+        body: &str,
+    ) -> Result<String, GitError> {
+        info!(owner, repo, comment_id, "updating comment on pull request");
+        let comment = self
+            .client
+            .issues(owner, repo)
+            .update_comment(comment_id.into(), body)
+            .await
+            .map_err(|e| GitError::Api(format!("{e:?}")))?;
+        let url = comment.html_url.to_string();
+        info!(url = %url, "updated comment on pull request");
+        Ok(url)
+    }
+
     #[instrument(skip(self), fields(owner, repo, branch), err)]
     async fn delete_branch(
         &self,
@@ -374,6 +419,15 @@ fn account_type_from_author(author: &octocrab::models::Author) -> AccountType {
         "Organization" => AccountType::Organization,
         "Bot" => AccountType::Bot,
         other => AccountType::Other(other.to_string()),
+    }
+}
+
+fn issue_comment_from(comment: octocrab::models::issues::Comment) -> IssueComment {
+    IssueComment {
+        id: comment.id.into_inner(),
+        body: comment.body.unwrap_or_default(),
+        author_login: comment.user.login,
+        url: comment.html_url.to_string(),
     }
 }
 
