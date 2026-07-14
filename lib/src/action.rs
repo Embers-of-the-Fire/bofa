@@ -3,12 +3,17 @@ use crate::git::backend::{GitBackend, create_backend, dry_run::DryRunBackend};
 use crate::git::context::GitContext;
 use crate::git::{AccountType, Error as GitError};
 use crate::scanner::sensitive::SensitiveScanner;
-use check::pr::{CommentStatus, attach_marker, content_unchanged, has_marker};
+use crate::scanner::triage::TriageScanner;
+use check::pr::{
+    CommentStatus as CheckCommentStatus, attach_marker as attach_check_marker,
+    content_unchanged as check_content_unchanged, has_marker as check_has_marker,
+};
 use std::path::Path;
 use thiserror::Error;
 use tracing::{debug, info, warn};
 
 pub mod check;
+pub mod triage;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -18,6 +23,8 @@ pub enum Error {
     Git(#[from] GitError),
     #[error(transparent)]
     Check(#[from] check::Error),
+    #[error(transparent)]
+    Triage(#[from] triage::Error),
 }
 
 pub struct Bofa {
@@ -193,7 +200,7 @@ impl AuthenticatedBofa {
                 let existing = comments
                     .into_iter()
                     .filter(|comment| {
-                        has_marker(&comment.body)
+                        check_has_marker(&comment.body)
                             && account_login
                                 .as_ref()
                                 .is_some_and(|me| &comment.author_login == me)
@@ -204,13 +211,18 @@ impl AuthenticatedBofa {
                         info!("posting new comment to pull request");
                         let url = self
                             .context
-                            .post_comment(&input.owner, &input.repo, input.id, &attach_marker(body))
+                            .post_comment(
+                                &input.owner,
+                                &input.repo,
+                                input.id,
+                                &attach_check_marker(body),
+                            )
                             .await?;
-                        (CommentStatus::Created, Some(url))
+                        (CheckCommentStatus::Created, Some(url))
                     }
-                    Some(comment) if content_unchanged(&comment.body, body) => {
+                    Some(comment) if check_content_unchanged(&comment.body, body) => {
                         info!("comment unchanged, skipping update");
-                        (CommentStatus::Unchanged, Some(comment.url))
+                        (CheckCommentStatus::Unchanged, Some(comment.url))
                     }
                     Some(comment) => {
                         info!("updating existing comment on pull request");
@@ -220,32 +232,32 @@ impl AuthenticatedBofa {
                                 &input.owner,
                                 &input.repo,
                                 comment.id,
-                                &attach_marker(body),
+                                &attach_check_marker(body),
                             )
                             .await?;
-                        (CommentStatus::Updated, Some(url))
+                        (CheckCommentStatus::Updated, Some(url))
                     }
                 }
             } else {
-                (CommentStatus::Skipped, None)
+                (CheckCommentStatus::Skipped, None)
             }
         } else {
-            (CommentStatus::Skipped, None)
+            (CheckCommentStatus::Skipped, None)
         };
         match status {
-            CommentStatus::Created => {
+            CheckCommentStatus::Created => {
                 info!(url = %comment_url.as_ref().unwrap(), "comment created")
             }
-            CommentStatus::Updated => {
+            CheckCommentStatus::Updated => {
                 info!(url = %comment_url.as_ref().unwrap(), "comment updated")
             }
-            CommentStatus::Unchanged => {
+            CheckCommentStatus::Unchanged => {
                 info!(url = %comment_url.as_ref().unwrap(), "comment unchanged")
             }
-            CommentStatus::Skipped if rendered.is_some() => {
+            CheckCommentStatus::Skipped if rendered.is_some() => {
                 info!("rendered comment, not posted")
             }
-            CommentStatus::Skipped => info!("no sensitive changes detected"),
+            CheckCommentStatus::Skipped => info!("no sensitive changes detected"),
         }
         let (labels_applied, labels_missing) = self.apply_labels(&input, &result.findings).await?;
         Ok(check::pr::CheckPrOutput {
@@ -255,6 +267,196 @@ impl AuthenticatedBofa {
             labels_applied,
             labels_missing,
         })
+    }
+
+    pub async fn triage_pr(&self, id: u64) -> Result<triage::pr::TriagePrOutput, Error> {
+        let input = triage::pr::PrInput::from_repository(id, &self.config.repository);
+        info!(
+            pr_id = id,
+            owner = %input.owner,
+            repo = %input.repo,
+            "triaging pull request"
+        );
+        let metadata = self
+            .context
+            .pull_request(&input.owner, &input.repo, input.id)
+            .await?;
+        debug!(pr = metadata.number, title = %metadata.title, "fetched pull request metadata");
+        let triage_enabled = self.config.scanner.enabled && self.config.scanner.triage.enabled;
+        debug!(triage_enabled, "triage active");
+        if !triage_enabled {
+            debug!("triage disabled, skipping");
+            return Ok(triage::pr::TriagePrOutput {
+                body: None,
+                status: triage::pr::CommentStatus::Skipped,
+                comment_url: None,
+                labels_applied: Vec::new(),
+                labels_missing: Vec::new(),
+            });
+        }
+        let changed_files = self
+            .context
+            .changed_files(&input.owner, &input.repo, input.id)
+            .await?;
+        info!(count = changed_files.len(), "fetched changed files");
+        let scanner =
+            TriageScanner::new(&self.config.scanner.triage).map_err(triage::Error::from)?;
+        let findings = scanner.scan(&changed_files);
+        info!(count = findings.len(), "triage scan completed");
+        let footnote_template = self.config.template.comment.footnote.clone();
+        let will_report = !findings.is_empty();
+        let footnote_needs_name = will_report && footnote_template.as_deref() != Some("");
+        let posting_needs_name = will_report && self.config.scanner.triage.post_comment;
+        let account_login = if footnote_needs_name || posting_needs_name {
+            match self.context.account_metadata().await {
+                Ok(metadata) => Some(metadata.login),
+                Err(err) => {
+                    warn!(error = %err, "failed to resolve account metadata");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let app_name = if footnote_needs_name {
+            account_login.clone()
+        } else {
+            None
+        };
+        let result = triage::pr::PrTriageResult {
+            findings,
+            footnote_template,
+            app_name,
+        };
+        let rendered = result.render()?;
+        let (status, comment_url) = if self.config.scanner.triage.post_comment {
+            if let Some(body) = &rendered {
+                let comments = self
+                    .context
+                    .list_comments(&input.owner, &input.repo, input.id)
+                    .await?;
+                let existing = comments
+                    .into_iter()
+                    .filter(|comment| {
+                        triage::pr::has_marker(&comment.body)
+                            && account_login
+                                .as_ref()
+                                .is_some_and(|me| &comment.author_login == me)
+                    })
+                    .max_by_key(|comment| comment.id);
+                match existing {
+                    None => {
+                        info!("posting new triage comment to pull request");
+                        let url = self
+                            .context
+                            .post_comment(
+                                &input.owner,
+                                &input.repo,
+                                input.id,
+                                &triage::pr::attach_marker(body),
+                            )
+                            .await?;
+                        (triage::pr::CommentStatus::Created, Some(url))
+                    }
+                    Some(comment) if triage::pr::content_unchanged(&comment.body, body) => {
+                        info!("triage comment unchanged, skipping update");
+                        (triage::pr::CommentStatus::Unchanged, Some(comment.url))
+                    }
+                    Some(comment) => {
+                        info!("updating existing triage comment on pull request");
+                        let url = self
+                            .context
+                            .update_comment(
+                                &input.owner,
+                                &input.repo,
+                                comment.id,
+                                &triage::pr::attach_marker(body),
+                            )
+                            .await?;
+                        (triage::pr::CommentStatus::Updated, Some(url))
+                    }
+                }
+            } else {
+                (triage::pr::CommentStatus::Skipped, None)
+            }
+        } else {
+            (triage::pr::CommentStatus::Skipped, None)
+        };
+        match status {
+            triage::pr::CommentStatus::Created => {
+                info!(url = %comment_url.as_ref().unwrap(), "triage comment created")
+            }
+            triage::pr::CommentStatus::Updated => {
+                info!(url = %comment_url.as_ref().unwrap(), "triage comment updated")
+            }
+            triage::pr::CommentStatus::Unchanged => {
+                info!(url = %comment_url.as_ref().unwrap(), "triage comment unchanged")
+            }
+            triage::pr::CommentStatus::Skipped if rendered.is_some() => {
+                info!("rendered triage comment, not posted")
+            }
+            triage::pr::CommentStatus::Skipped => info!("no triage groups matched"),
+        }
+        let (labels_applied, labels_missing) =
+            self.apply_triage_labels(&input, &result.findings).await?;
+        Ok(triage::pr::TriagePrOutput {
+            body: rendered,
+            status,
+            comment_url,
+            labels_applied,
+            labels_missing,
+        })
+    }
+
+    async fn apply_triage_labels(
+        &self,
+        input: &triage::pr::PrInput,
+        findings: &[crate::scanner::triage::TriageFinding],
+    ) -> Result<(Vec<String>, Vec<String>), Error> {
+        if findings.is_empty() {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        let mut desired: Vec<String> = Vec::new();
+        for finding in findings {
+            for label in &finding.labels {
+                if !desired.iter().any(|d| d.eq_ignore_ascii_case(label)) {
+                    desired.push(label.clone());
+                }
+            }
+        }
+        if desired.is_empty() {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        info!(
+            count = desired.len(),
+            "resolving triage labels for pull request"
+        );
+        let existing = self.context.list_labels(&input.owner, &input.repo).await?;
+        let mut applicable = Vec::new();
+        let mut missing = Vec::new();
+        for label in desired {
+            match existing.iter().find(|e| e.eq_ignore_ascii_case(&label)) {
+                Some(canonical) => applicable.push(canonical.clone()),
+                None => missing.push(label),
+            }
+        }
+        if !missing.is_empty() {
+            warn!(
+                missing = ?missing,
+                "configured triage labels not present in repository, skipping them"
+            );
+        }
+        if applicable.is_empty() {
+            return Ok((Vec::new(), missing));
+        }
+        info!(
+            count = applicable.len(),
+            "adding triage labels to pull request"
+        );
+        self.context
+            .add_labels(&input.owner, &input.repo, input.id, &applicable)
+            .await?;
+        Ok((applicable, missing))
     }
 
     async fn apply_labels(
@@ -313,9 +515,11 @@ impl AuthenticatedBofa {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::action::check::pr::{CommentStatus, attach_marker};
     use crate::config::BofaConfig;
     use crate::config::credentials::{Credentials, PersonalTokenCredentials, SecretString};
     use crate::config::scanner::sensitive::{SensitiveScannerConfig, SensitiveScannerItem};
+    use crate::config::scanner::triage::{TriageConfig, TriageGroup};
     use crate::git::backend::mock::MockGitBackend;
     use crate::git::{ChangedFile, FileChangeStatus, PullRequestMetadata};
 
@@ -1137,5 +1341,301 @@ mod tests {
         let err = bofa.check_pr(42).await.unwrap_err();
         assert!(matches!(err, Error::Git(GitError::Api(_))));
         assert_eq!(add_calls.load(Ordering::SeqCst), 0);
+    }
+
+    fn config_with_triage() -> BofaConfig {
+        let mut config = test_config();
+        config.scanner.triage = TriageConfig {
+            enabled: true,
+            post_comment: false,
+            groups: indexmap::indexmap! {
+                "core".to_string() => TriageGroup {
+                    description: "Core changes".to_string(),
+                    paths: vec!["/path/to/repo1/**".to_string()],
+                    labels: vec!["core-impact".to_string()],
+                },
+                "docs".to_string() => TriageGroup {
+                    description: "Documentation".to_string(),
+                    paths: vec!["/docs/**".to_string()],
+                    labels: vec!["docs".to_string()],
+                },
+            },
+        };
+        config
+    }
+
+    fn triage_marked_comment(id: u64, author: &str, rendered: &str) -> crate::git::IssueComment {
+        crate::git::IssueComment {
+            id,
+            body: triage::pr::attach_marker(rendered),
+            author_login: author.to_string(),
+            url: format!("https://github.com/owner/repo/pull/42#issuecomment-{id}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn triage_pr_disabled_returns_skipped() {
+        let backend = MockGitBackend::new();
+        let bofa = Bofa::new(test_config())
+            .authenticate_with(Box::new(backend))
+            .await
+            .unwrap();
+        let output = bofa.triage_pr(42).await.unwrap();
+        assert!(output.body.is_none());
+        assert_eq!(output.status, triage::pr::CommentStatus::Skipped);
+        assert!(output.comment_url.is_none());
+        assert!(output.labels_applied.is_empty());
+        assert!(output.labels_missing.is_empty());
+    }
+
+    #[tokio::test]
+    async fn triage_pr_no_match_returns_skipped() {
+        let backend = MockGitBackend::new();
+        backend.set_changed_files(|| async { Ok(vec![changed_file("/unrelated/file.txt")]) });
+        let bofa = Bofa::new(config_with_triage())
+            .authenticate_with(Box::new(backend))
+            .await
+            .unwrap();
+        let output = bofa.triage_pr(42).await.unwrap();
+        assert!(output.body.is_none());
+        assert_eq!(output.status, triage::pr::CommentStatus::Skipped);
+        assert!(output.comment_url.is_none());
+        assert!(output.labels_applied.is_empty());
+        assert!(output.labels_missing.is_empty());
+    }
+
+    #[tokio::test]
+    async fn triage_pr_applies_labels_when_group_matches() {
+        let backend = MockGitBackend::new();
+        backend
+            .set_changed_files(|| async { Ok(vec![changed_file("/path/to/repo1/src/main.rs")]) });
+        backend.set_list_labels(|| async { Ok(vec!["core-impact".to_string()]) });
+        let bofa = Bofa::new(config_with_triage())
+            .authenticate_with(Box::new(backend))
+            .await
+            .unwrap();
+        let output = bofa.triage_pr(42).await.unwrap();
+        assert_eq!(output.labels_applied, vec!["core-impact".to_string()]);
+        assert!(output.labels_missing.is_empty());
+    }
+
+    #[tokio::test]
+    async fn triage_pr_posts_comment_when_post_comment_enabled() {
+        let mut config = config_with_triage();
+        config.scanner.triage.post_comment = true;
+        let backend = MockGitBackend::new();
+        backend
+            .set_changed_files(|| async { Ok(vec![changed_file("/path/to/repo1/src/main.rs")]) });
+        backend.set_list_labels(|| async { Ok(vec!["core-impact".to_string()]) });
+        let bofa = Bofa::new(config)
+            .authenticate_with(Box::new(backend))
+            .await
+            .unwrap();
+        let output = bofa.triage_pr(42).await.unwrap();
+        assert_eq!(output.status, triage::pr::CommentStatus::Created);
+        assert!(output.body.is_some());
+        assert!(
+            output
+                .body
+                .as_ref()
+                .unwrap()
+                .contains("Automatically triage the pull request to:")
+        );
+        assert!(output.labels_applied.contains(&"core-impact".to_string()));
+        assert_eq!(
+            output.comment_url,
+            Some("https://github.com/test/repo/pull/1#issuecomment-1".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn triage_pr_applies_labels_without_posting_comment() {
+        let backend = MockGitBackend::new();
+        backend
+            .set_changed_files(|| async { Ok(vec![changed_file("/path/to/repo1/src/main.rs")]) });
+        backend.set_list_labels(|| async { Ok(vec!["core-impact".to_string()]) });
+        let bofa = Bofa::new(config_with_triage())
+            .authenticate_with(Box::new(backend))
+            .await
+            .unwrap();
+        let output = bofa.triage_pr(42).await.unwrap();
+        assert_eq!(output.status, triage::pr::CommentStatus::Skipped);
+        assert!(output.body.is_some());
+        assert!(output.labels_applied.contains(&"core-impact".to_string()));
+        assert!(output.comment_url.is_none());
+    }
+
+    #[tokio::test]
+    async fn triage_pr_matches_labels_case_insensitively() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let backend = MockGitBackend::new();
+        backend
+            .set_changed_files(|| async { Ok(vec![changed_file("/path/to/repo1/src/main.rs")]) });
+        backend.set_list_labels(|| async { Ok(vec!["Core-Impact".to_string()]) });
+        let add_calls = Arc::new(AtomicU32::new(0));
+        let ac = Arc::clone(&add_calls);
+        backend.set_add_labels(move || {
+            let ac = Arc::clone(&ac);
+            async move {
+                ac.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        });
+        let bofa = Bofa::new(config_with_triage())
+            .authenticate_with(Box::new(backend))
+            .await
+            .unwrap();
+        let output = bofa.triage_pr(42).await.unwrap();
+        assert_eq!(output.labels_applied, vec!["Core-Impact".to_string()]);
+        assert!(output.labels_missing.is_empty());
+        assert_eq!(add_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn triage_pr_skips_missing_labels_and_applies_existing() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let backend = MockGitBackend::new();
+        backend.set_changed_files(|| async {
+            Ok(vec![
+                changed_file("/path/to/repo1/src/main.rs"),
+                changed_file("/docs/README.md"),
+            ])
+        });
+        backend.set_list_labels(|| async { Ok(vec!["core-impact".to_string()]) });
+        let add_calls = Arc::new(AtomicU32::new(0));
+        let ac = Arc::clone(&add_calls);
+        backend.set_add_labels(move || {
+            let ac = Arc::clone(&ac);
+            async move {
+                ac.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        });
+        let bofa = Bofa::new(config_with_triage())
+            .authenticate_with(Box::new(backend))
+            .await
+            .unwrap();
+        let output = bofa.triage_pr(42).await.unwrap();
+        assert_eq!(output.labels_applied, vec!["core-impact".to_string()]);
+        assert_eq!(output.labels_missing, vec!["docs".to_string()]);
+        assert_eq!(add_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn triage_pr_dry_run_blocks_add_labels() {
+        let mut config = config_with_triage();
+        config.worker.dry_run = true;
+        let backend = MockGitBackend::new();
+        backend
+            .set_changed_files(|| async { Ok(vec![changed_file("/path/to/repo1/src/main.rs")]) });
+        backend.set_list_labels(|| async { Ok(vec!["core-impact".to_string()]) });
+        let bofa = Bofa::new(config)
+            .authenticate_with(Box::new(backend))
+            .await
+            .unwrap();
+        let err = bofa.triage_pr(42).await.unwrap_err();
+        assert!(matches!(err, Error::Git(GitError::DryRun(action)) if action == "add_labels"));
+    }
+
+    #[tokio::test]
+    async fn triage_pr_skips_update_when_comment_unchanged() {
+        use crate::scanner::triage::TriageScanner;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let mut config = config_with_triage();
+        config.scanner.triage.post_comment = true;
+        let scanner = TriageScanner::new(&config.scanner.triage).unwrap();
+        let findings = scanner.scan(&[changed_file("/path/to/repo1/src/main.rs")]);
+        let rendered = triage::pr::PrTriageResult {
+            findings,
+            footnote_template: None,
+            app_name: Some("octocat".to_string()),
+        }
+        .render()
+        .unwrap()
+        .unwrap();
+
+        let backend = MockGitBackend::new();
+        backend
+            .set_changed_files(|| async { Ok(vec![changed_file("/path/to/repo1/src/main.rs")]) });
+        backend.set_list_comments(move || {
+            let rendered = rendered.clone();
+            async move { Ok(vec![triage_marked_comment(7, "octocat", &rendered)]) }
+        });
+        backend.set_list_labels(|| async { Ok(vec!["core-impact".to_string()]) });
+        let post_calls = Arc::new(AtomicU32::new(0));
+        let update_calls = Arc::new(AtomicU32::new(0));
+        let pc = Arc::clone(&post_calls);
+        backend.set_post_comment(move || {
+            let pc = Arc::clone(&pc);
+            async move {
+                pc.fetch_add(1, Ordering::SeqCst);
+                Ok("https://created".to_string())
+            }
+        });
+        let uc = Arc::clone(&update_calls);
+        backend.set_update_comment(move || {
+            let uc = Arc::clone(&uc);
+            async move {
+                uc.fetch_add(1, Ordering::SeqCst);
+                Ok("https://updated".to_string())
+            }
+        });
+        let bofa = Bofa::new(config)
+            .authenticate_with(Box::new(backend))
+            .await
+            .unwrap();
+        let output = bofa.triage_pr(42).await.unwrap();
+        assert_eq!(output.status, triage::pr::CommentStatus::Unchanged);
+        assert_eq!(
+            output.comment_url,
+            Some("https://github.com/owner/repo/pull/42#issuecomment-7".to_string())
+        );
+        assert_eq!(post_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(update_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn triage_pr_updates_existing_marked_comment_when_content_changes() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let mut config = config_with_triage();
+        config.scanner.triage.post_comment = true;
+        let backend = MockGitBackend::new();
+        backend
+            .set_changed_files(|| async { Ok(vec![changed_file("/path/to/repo1/src/main.rs")]) });
+        backend.set_list_comments(|| async {
+            Ok(vec![triage_marked_comment(7, "octocat", "stale report")])
+        });
+        backend.set_list_labels(|| async { Ok(vec!["core-impact".to_string()]) });
+        let post_calls = Arc::new(AtomicU32::new(0));
+        let pc = Arc::clone(&post_calls);
+        backend.set_post_comment(move || {
+            let pc = Arc::clone(&pc);
+            async move {
+                pc.fetch_add(1, Ordering::SeqCst);
+                Ok("https://created".to_string())
+            }
+        });
+        backend.set_update_comment(|| async {
+            Ok("https://github.com/owner/repo/pull/42#issuecomment-7".to_string())
+        });
+        let bofa = Bofa::new(config)
+            .authenticate_with(Box::new(backend))
+            .await
+            .unwrap();
+        let output = bofa.triage_pr(42).await.unwrap();
+        assert_eq!(output.status, triage::pr::CommentStatus::Updated);
+        assert_eq!(
+            output.comment_url,
+            Some("https://github.com/owner/repo/pull/42#issuecomment-7".to_string())
+        );
+        assert_eq!(post_calls.load(Ordering::SeqCst), 0);
     }
 }

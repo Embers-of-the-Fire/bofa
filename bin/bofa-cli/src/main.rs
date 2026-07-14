@@ -21,10 +21,19 @@ enum Commands {
         #[command(subcommand)]
         command: CheckCommands,
     },
+    Triage {
+        #[command(subcommand)]
+        command: TriageCommands,
+    },
 }
 
 #[derive(Subcommand)]
 enum CheckCommands {
+    Pr { id: u64 },
+}
+
+#[derive(Subcommand)]
+enum TriageCommands {
     Pr { id: u64 },
 }
 
@@ -74,6 +83,51 @@ async fn main() {
                         println!("Comment: not posted");
                     } else {
                         println!("Comment: none (nothing to report)");
+                    }
+                }
+            }
+            if !result.labels_applied.is_empty() {
+                println!("Applied labels: {}", result.labels_applied.join(", "));
+            }
+            if !result.labels_missing.is_empty() {
+                println!(
+                    "Missing labels (skipped): {}",
+                    result.labels_missing.join(", ")
+                );
+            }
+            if matches!(result.status, CommentStatus::Skipped)
+                && let Some(body) = result.body
+            {
+                println!();
+                println!("--- Rendered comment ---");
+                println!("{body}");
+                println!("--- End of comment ---");
+            }
+        }
+        Commands::Triage {
+            command: TriageCommands::Pr { id },
+        } => {
+            use bofa_lib::action::triage::pr::CommentStatus;
+            let bofa = authenticate(bofa).await;
+            let result = bofa.triage_pr(id).await.unwrap_or_else(|err| {
+                eprintln!("Triage failed: {err}");
+                std::process::exit(1);
+            });
+            match result.status {
+                CommentStatus::Created => {
+                    println!("Comment: created {}", result.comment_url.unwrap());
+                }
+                CommentStatus::Updated => {
+                    println!("Comment: updated {}", result.comment_url.unwrap());
+                }
+                CommentStatus::Unchanged => {
+                    println!("Comment: up to date {}", result.comment_url.unwrap());
+                }
+                CommentStatus::Skipped => {
+                    if result.body.is_some() {
+                        println!("Comment: not posted");
+                    } else {
+                        println!("Comment: none (no triage groups matched)");
                     }
                 }
             }

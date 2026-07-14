@@ -1,4 +1,5 @@
 pub mod sensitive;
+pub mod triage;
 
 use serde::{Deserialize, Serialize};
 
@@ -8,6 +9,8 @@ pub struct ScannerConfig {
     pub enabled: bool,
     #[serde(default)]
     pub sensitive: sensitive::SensitiveScannerConfig,
+    #[serde(default)]
+    pub triage: triage::TriageConfig,
 }
 
 impl Default for ScannerConfig {
@@ -15,6 +18,7 @@ impl Default for ScannerConfig {
         Self {
             enabled: true,
             sensitive: Default::default(),
+            triage: Default::default(),
         }
     }
 }
