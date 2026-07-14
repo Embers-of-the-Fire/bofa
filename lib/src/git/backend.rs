@@ -57,6 +57,14 @@ pub trait GitBackend: Send + Sync {
         path: &str,
         content: &[u8],
     ) -> Result<(), super::Error>;
+    async fn list_labels(&self, owner: &str, repo: &str) -> Result<Vec<String>, super::Error>;
+    async fn add_labels(
+        &self,
+        owner: &str,
+        repo: &str,
+        id: u64,
+        labels: &[String],
+    ) -> Result<(), super::Error>;
 }
 
 pub async fn create_backend(

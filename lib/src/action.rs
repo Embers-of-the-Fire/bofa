@@ -247,11 +247,66 @@ impl AuthenticatedBofa {
             }
             CommentStatus::Skipped => info!("no sensitive changes detected"),
         }
+        let (labels_applied, labels_missing) = self.apply_labels(&input, &result.findings).await?;
         Ok(check::pr::CheckPrOutput {
             body: rendered,
             status,
             comment_url,
+            labels_applied,
+            labels_missing,
         })
+    }
+
+    async fn apply_labels(
+        &self,
+        input: &check::pr::PrInput,
+        findings: &[crate::scanner::sensitive::SensitiveFinding],
+    ) -> Result<(Vec<String>, Vec<String>), Error> {
+        if findings.is_empty() {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        let mut desired: Vec<String> = self.config.scanner.sensitive.labels.clone();
+        for finding in findings {
+            for label in &finding.labels {
+                if !desired.iter().any(|d| d.eq_ignore_ascii_case(label)) {
+                    desired.push(label.clone());
+                }
+            }
+        }
+        if desired.is_empty() {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        info!(count = desired.len(), "resolving labels for pull request");
+        let existing = self.context.list_labels(&input.owner, &input.repo).await?;
+        let mut applicable = Vec::new();
+        let mut missing = Vec::new();
+        for label in desired {
+            match existing.iter().find(|e| e.eq_ignore_ascii_case(&label)) {
+                Some(canonical) => applicable.push(canonical.clone()),
+                None => missing.push(label),
+            }
+        }
+        if !missing.is_empty() {
+            warn!(
+                missing = ?missing,
+                "configured labels not present in repository, skipping them"
+            );
+        }
+        if applicable.is_empty() {
+            return Ok((Vec::new(), missing));
+        }
+        if !self.config.worker.post_comments {
+            info!(
+                count = applicable.len(),
+                "post_comments disabled, not applying labels"
+            );
+            return Ok((Vec::new(), missing));
+        }
+        info!(count = applicable.len(), "adding labels to pull request");
+        self.context
+            .add_labels(&input.owner, &input.repo, input.id, &applicable)
+            .await?;
+        Ok((applicable, missing))
     }
 }
 
@@ -285,16 +340,19 @@ mod tests {
         config.scanner.sensitive = SensitiveScannerConfig {
             enabled: true,
             always_report: false,
-            item: indexmap::indexmap! {
+            labels: Vec::new(),
+            groups: indexmap::indexmap! {
                 "core-repo".to_string() => SensitiveScannerItem {
                     description: "Core repo".to_string(),
                     paths: vec!["/path/to/repo1/**".to_string()],
                     members: vec!["alice".to_string(), "bob".to_string()],
+                    labels: Vec::new(),
                 },
                 "other".to_string() => SensitiveScannerItem {
                     description: "Other".to_string(),
                     paths: vec!["/other/**".to_string()],
                     members: vec!["carol".to_string()],
+                    labels: Vec::new(),
                 },
             },
         };
@@ -767,5 +825,317 @@ mod tests {
             output.comment_url,
             Some("https://github.com/owner/repo/pull/42#issuecomment-5".to_string())
         );
+    }
+
+    fn config_with_labels() -> BofaConfig {
+        let mut config = test_config();
+        config.scanner.sensitive = SensitiveScannerConfig {
+            enabled: true,
+            always_report: false,
+            labels: vec!["needs-security-review".to_string()],
+            groups: indexmap::indexmap! {
+                "core-repo".to_string() => SensitiveScannerItem {
+                    description: "Core repo".to_string(),
+                    paths: vec!["/path/to/repo1/**".to_string()],
+                    members: vec!["alice".to_string()],
+                    labels: vec!["core-impact".to_string(), "needs-security-review".to_string()],
+                },
+                "other".to_string() => SensitiveScannerItem {
+                    description: "Other".to_string(),
+                    paths: vec!["/other/**".to_string()],
+                    members: vec!["carol".to_string()],
+                    labels: vec!["other-impact".to_string()],
+                },
+            },
+        };
+        config
+    }
+
+    #[tokio::test]
+    async fn check_pr_applies_labels_when_findings_exist() {
+        let backend = MockGitBackend::new();
+        backend.set_changed_files(|| async {
+            Ok(vec![
+                changed_file("/path/to/repo1/src/main.rs"),
+                changed_file("/other/README.md"),
+            ])
+        });
+        backend.set_list_labels(|| async {
+            Ok(vec![
+                "needs-security-review".to_string(),
+                "core-impact".to_string(),
+                "other-impact".to_string(),
+            ])
+        });
+        let bofa = Bofa::new(config_with_labels())
+            .authenticate_with(Box::new(backend))
+            .await
+            .unwrap();
+        let output = bofa.check_pr(42).await.unwrap();
+        assert_eq!(
+            output.labels_applied,
+            vec![
+                "needs-security-review".to_string(),
+                "core-impact".to_string(),
+                "other-impact".to_string(),
+            ]
+        );
+        assert!(output.labels_missing.is_empty());
+    }
+
+    #[tokio::test]
+    async fn check_pr_does_not_apply_labels_when_no_findings() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let backend = MockGitBackend::new();
+        backend.set_changed_files(|| async { Ok(vec![changed_file("/unrelated/file.txt")]) });
+        let list_calls = Arc::new(AtomicU32::new(0));
+        let lc = Arc::clone(&list_calls);
+        backend.set_list_labels(move || {
+            let lc = Arc::clone(&lc);
+            async move {
+                lc.fetch_add(1, Ordering::SeqCst);
+                Ok(Vec::new())
+            }
+        });
+        let add_calls = Arc::new(AtomicU32::new(0));
+        let ac = Arc::clone(&add_calls);
+        backend.set_add_labels(move || {
+            let ac = Arc::clone(&ac);
+            async move {
+                ac.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        });
+        let bofa = Bofa::new(config_with_labels())
+            .authenticate_with(Box::new(backend))
+            .await
+            .unwrap();
+        let output = bofa.check_pr(42).await.unwrap();
+        assert!(output.labels_applied.is_empty());
+        assert!(output.labels_missing.is_empty());
+        assert_eq!(list_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(add_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn check_pr_matches_labels_case_insensitively() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let backend = MockGitBackend::new();
+        backend
+            .set_changed_files(|| async { Ok(vec![changed_file("/path/to/repo1/src/main.rs")]) });
+        backend.set_list_labels(|| async {
+            Ok(vec![
+                "Needs-Security-Review".to_string(),
+                "CORE-IMPACT".to_string(),
+            ])
+        });
+        let add_calls = Arc::new(AtomicU32::new(0));
+        let ac = Arc::clone(&add_calls);
+        backend.set_add_labels(move || {
+            let ac = Arc::clone(&ac);
+            async move {
+                ac.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        });
+        let bofa = Bofa::new(config_with_labels())
+            .authenticate_with(Box::new(backend))
+            .await
+            .unwrap();
+        let output = bofa.check_pr(42).await.unwrap();
+        assert_eq!(
+            output.labels_applied,
+            vec![
+                "Needs-Security-Review".to_string(),
+                "CORE-IMPACT".to_string(),
+            ]
+        );
+        assert!(output.labels_missing.is_empty());
+        assert_eq!(add_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn check_pr_skips_missing_labels_and_applies_existing() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let backend = MockGitBackend::new();
+        backend
+            .set_changed_files(|| async { Ok(vec![changed_file("/path/to/repo1/src/main.rs")]) });
+        backend.set_list_labels(|| async { Ok(vec!["core-impact".to_string()]) });
+        let add_calls = Arc::new(AtomicU32::new(0));
+        let ac = Arc::clone(&add_calls);
+        backend.set_add_labels(move || {
+            let ac = Arc::clone(&ac);
+            async move {
+                ac.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        });
+        let bofa = Bofa::new(config_with_labels())
+            .authenticate_with(Box::new(backend))
+            .await
+            .unwrap();
+        let output = bofa.check_pr(42).await.unwrap();
+        assert_eq!(output.labels_applied, vec!["core-impact".to_string()]);
+        assert_eq!(
+            output.labels_missing,
+            vec!["needs-security-review".to_string()]
+        );
+        assert_eq!(add_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn check_pr_checks_but_does_not_apply_labels_when_post_comments_disabled() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let backend = MockGitBackend::new();
+        backend
+            .set_changed_files(|| async { Ok(vec![changed_file("/path/to/repo1/src/main.rs")]) });
+        let list_calls = Arc::new(AtomicU32::new(0));
+        let lc = Arc::clone(&list_calls);
+        backend.set_list_labels(move || {
+            let lc = Arc::clone(&lc);
+            async move {
+                lc.fetch_add(1, Ordering::SeqCst);
+                Ok(Vec::new())
+            }
+        });
+        let add_calls = Arc::new(AtomicU32::new(0));
+        let ac = Arc::clone(&add_calls);
+        backend.set_add_labels(move || {
+            let ac = Arc::clone(&ac);
+            async move {
+                ac.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        });
+        let mut config = config_with_labels();
+        config.worker.post_comments = false;
+        let bofa = Bofa::new(config)
+            .authenticate_with(Box::new(backend))
+            .await
+            .unwrap();
+        let output = bofa.check_pr(42).await.unwrap();
+        assert!(output.labels_applied.is_empty());
+        assert_eq!(
+            output.labels_missing,
+            vec![
+                "needs-security-review".to_string(),
+                "core-impact".to_string(),
+            ]
+        );
+        assert_eq!(list_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(add_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn check_pr_does_not_apply_existing_labels_when_post_comments_disabled() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let backend = MockGitBackend::new();
+        backend
+            .set_changed_files(|| async { Ok(vec![changed_file("/path/to/repo1/src/main.rs")]) });
+        backend.set_list_labels(|| async {
+            Ok(vec![
+                "needs-security-review".to_string(),
+                "core-impact".to_string(),
+            ])
+        });
+        let add_calls = Arc::new(AtomicU32::new(0));
+        let ac = Arc::clone(&add_calls);
+        backend.set_add_labels(move || {
+            let ac = Arc::clone(&ac);
+            async move {
+                ac.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        });
+        let mut config = config_with_labels();
+        config.worker.post_comments = false;
+        let bofa = Bofa::new(config)
+            .authenticate_with(Box::new(backend))
+            .await
+            .unwrap();
+        let output = bofa.check_pr(42).await.unwrap();
+        assert!(output.labels_applied.is_empty());
+        assert!(output.labels_missing.is_empty());
+        assert_eq!(add_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn check_pr_dry_run_blocks_add_labels() {
+        let mut config = config_with_labels();
+        let scanner = SensitiveScanner::new(&config.scanner.sensitive).unwrap();
+        let findings = scanner.scan(&[changed_file("/path/to/repo1/src/main.rs")]);
+        let rendered = check::pr::PrCheckResult {
+            metadata: PullRequestMetadata {
+                number: 1,
+                title: String::new(),
+                state: String::new(),
+                author: String::new(),
+                draft: false,
+                url: String::new(),
+            },
+            findings,
+            scanner_enabled: true,
+            always_report: false,
+            report_template: None,
+            empty_report_template: None,
+            footnote_template: None,
+            app_name: Some("octocat".to_string()),
+        }
+        .render()
+        .unwrap()
+        .unwrap();
+
+        let backend = MockGitBackend::new();
+        backend
+            .set_changed_files(|| async { Ok(vec![changed_file("/path/to/repo1/src/main.rs")]) });
+        backend.set_list_comments(move || {
+            let rendered = rendered.clone();
+            async move { Ok(vec![marked_comment(7, "octocat", &rendered)]) }
+        });
+        backend.set_list_labels(|| async { Ok(vec!["core-impact".to_string()]) });
+        config.worker.dry_run = true;
+        let bofa = Bofa::new(config)
+            .authenticate_with(Box::new(backend))
+            .await
+            .unwrap();
+        let err = bofa.check_pr(42).await.unwrap_err();
+        assert!(matches!(err, Error::Git(GitError::DryRun(action)) if action == "add_labels"));
+    }
+
+    #[tokio::test]
+    async fn check_pr_propagates_list_labels_error() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let backend = MockGitBackend::new();
+        backend
+            .set_changed_files(|| async { Ok(vec![changed_file("/path/to/repo1/src/main.rs")]) });
+        backend.set_list_labels(|| async { Err(GitError::Api("labels boom".to_string())) });
+        let add_calls = Arc::new(AtomicU32::new(0));
+        let ac = Arc::clone(&add_calls);
+        backend.set_add_labels(move || {
+            let ac = Arc::clone(&ac);
+            async move {
+                ac.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        });
+        let bofa = Bofa::new(config_with_labels())
+            .authenticate_with(Box::new(backend))
+            .await
+            .unwrap();
+        let err = bofa.check_pr(42).await.unwrap_err();
+        assert!(matches!(err, Error::Git(GitError::Api(_))));
+        assert_eq!(add_calls.load(Ordering::SeqCst), 0);
     }
 }

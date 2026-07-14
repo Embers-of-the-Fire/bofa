@@ -15,6 +15,7 @@ pub struct SensitiveFinding {
     pub description: String,
     pub matched_paths: Vec<String>,
     pub related_persons: Vec<String>,
+    pub labels: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -23,6 +24,7 @@ struct CompiledItem {
     description: String,
     patterns: Vec<Pattern>,
     members: Vec<String>,
+    labels: Vec<String>,
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -39,7 +41,7 @@ pub struct SensitiveScanner {
 impl SensitiveScanner {
     pub fn new(config: &SensitiveScannerConfig) -> Result<Self, Error> {
         let mut items = Vec::new();
-        for (name, item) in &config.item {
+        for (name, item) in &config.groups {
             let mut patterns = Vec::new();
             for path in &item.paths {
                 let pattern = Pattern::new(path)
@@ -51,6 +53,7 @@ impl SensitiveScanner {
                 description: item.description.clone(),
                 patterns,
                 members: item.members.clone(),
+                labels: item.labels.clone(),
             });
         }
         Ok(Self { items })
@@ -74,6 +77,7 @@ impl SensitiveScanner {
                     description: item.description.clone(),
                     matched_paths: matched,
                     related_persons: item.members.clone(),
+                    labels: item.labels.clone(),
                 });
             }
         }
@@ -99,7 +103,8 @@ mod tests {
         SensitiveScannerConfig {
             enabled: true,
             always_report: false,
-            item: items,
+            labels: Vec::new(),
+            groups: items,
         }
     }
 
@@ -110,6 +115,7 @@ mod tests {
                 description: "config".to_string(),
                 paths: vec!["src/config.rs".to_string()],
                 members: vec!["alice".to_string()],
+                labels: Vec::new(),
             },
         });
         let scanner = SensitiveScanner::new(&config).unwrap();
@@ -127,6 +133,7 @@ mod tests {
                 description: "rust sources".to_string(),
                 paths: vec!["src/*.rs".to_string()],
                 members: vec!["bob".to_string()],
+                labels: Vec::new(),
             },
         });
         let scanner = SensitiveScanner::new(&config).unwrap();
@@ -147,6 +154,7 @@ mod tests {
                 description: "all rust".to_string(),
                 paths: vec!["**/*.rs".to_string()],
                 members: vec!["carol".to_string()],
+                labels: Vec::new(),
             },
         });
         let scanner = SensitiveScanner::new(&config).unwrap();
@@ -171,6 +179,7 @@ mod tests {
                 description: "core".to_string(),
                 paths: vec!["/path/to/repo1/**".to_string()],
                 members: vec!["alice".to_string(), "bob".to_string()],
+                labels: Vec::new(),
             },
         });
         let scanner = SensitiveScanner::new(&config).unwrap();
@@ -195,6 +204,7 @@ mod tests {
                 description: "config".to_string(),
                 paths: vec!["src/config.rs".to_string()],
                 members: vec!["alice".to_string()],
+                labels: Vec::new(),
             },
         });
         let scanner = SensitiveScanner::new(&config).unwrap();
@@ -209,16 +219,37 @@ mod tests {
                 description: "config".to_string(),
                 paths: vec!["src/config.rs".to_string()],
                 members: vec!["alice".to_string()],
+                labels: Vec::new(),
             },
             "main".to_string() => SensitiveScannerItem {
                 description: "main".to_string(),
                 paths: vec!["src/main.rs".to_string()],
                 members: vec!["bob".to_string()],
+                labels: Vec::new(),
             },
         });
         let scanner = SensitiveScanner::new(&config).unwrap();
         let findings = scanner.scan(&[changed_file("src/config.rs"), changed_file("src/main.rs")]);
         assert_eq!(findings.len(), 2);
+    }
+
+    #[test]
+    fn labels_propagate_to_findings() {
+        let config = config_with_items(indexmap::indexmap! {
+            "config".to_string() => SensitiveScannerItem {
+                description: "config".to_string(),
+                paths: vec!["src/config.rs".to_string()],
+                members: vec!["alice".to_string()],
+                labels: vec!["core-impact".to_string(), "high-priority".to_string()],
+            },
+        });
+        let scanner = SensitiveScanner::new(&config).unwrap();
+        let findings = scanner.scan(&[changed_file("src/config.rs")]);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(
+            findings[0].labels,
+            vec!["core-impact".to_string(), "high-priority".to_string()]
+        );
     }
 
     #[test]
@@ -228,6 +259,7 @@ mod tests {
                 description: "bad".to_string(),
                 paths: vec!["src/[[*.rs".to_string()],
                 members: vec!["alice".to_string()],
+                labels: Vec::new(),
             },
         });
         let err = SensitiveScanner::new(&config).unwrap_err();

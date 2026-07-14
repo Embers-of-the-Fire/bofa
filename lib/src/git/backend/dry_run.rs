@@ -100,4 +100,23 @@ impl GitBackend for DryRunBackend {
         warn!(action = "upload_file", "dry run blocked mutating action");
         Err(super::super::Error::DryRun("upload_file".to_string()))
     }
+
+    async fn list_labels(
+        &self,
+        owner: &str,
+        repo: &str,
+    ) -> Result<Vec<String>, super::super::Error> {
+        self.inner.list_labels(owner, repo).await
+    }
+
+    async fn add_labels(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _id: u64,
+        _labels: &[String],
+    ) -> Result<(), super::super::Error> {
+        warn!(action = "add_labels", "dry run blocked mutating action");
+        Err(super::super::Error::DryRun("add_labels".to_string()))
+    }
 }

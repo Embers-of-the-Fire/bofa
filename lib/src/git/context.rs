@@ -99,4 +99,20 @@ impl GitContext {
     ) -> Result<(), super::Error> {
         self.backend.upload_file(owner, repo, path, content).await
     }
+
+    #[instrument(skip(self), fields(owner, repo), err)]
+    pub async fn list_labels(&self, owner: &str, repo: &str) -> Result<Vec<String>, super::Error> {
+        self.backend.list_labels(owner, repo).await
+    }
+
+    #[instrument(skip(self, labels), fields(owner, repo, id, count = labels.len()), err)]
+    pub async fn add_labels(
+        &self,
+        owner: &str,
+        repo: &str,
+        id: u64,
+        labels: &[String],
+    ) -> Result<(), super::Error> {
+        self.backend.add_labels(owner, repo, id, labels).await
+    }
 }

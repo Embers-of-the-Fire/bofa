@@ -61,19 +61,38 @@ async fn main() {
             });
             match result.status {
                 CommentStatus::Created => {
-                    println!("Created comment: {}", result.comment_url.unwrap());
+                    println!("Comment: created {}", result.comment_url.unwrap());
                 }
                 CommentStatus::Updated => {
-                    println!("Updated comment: {}", result.comment_url.unwrap());
+                    println!("Comment: updated {}", result.comment_url.unwrap());
                 }
                 CommentStatus::Unchanged => {
-                    println!("Comment up to date: {}", result.comment_url.unwrap());
+                    println!("Comment: up to date {}", result.comment_url.unwrap());
                 }
                 CommentStatus::Skipped => {
-                    if let Some(body) = result.body {
-                        println!("{body}");
+                    if result.body.is_some() {
+                        println!("Comment: not posted");
+                    } else {
+                        println!("Comment: none (nothing to report)");
                     }
                 }
+            }
+            if !result.labels_applied.is_empty() {
+                println!("Applied labels: {}", result.labels_applied.join(", "));
+            }
+            if !result.labels_missing.is_empty() {
+                println!(
+                    "Missing labels (skipped): {}",
+                    result.labels_missing.join(", ")
+                );
+            }
+            if matches!(result.status, CommentStatus::Skipped)
+                && let Some(body) = result.body
+            {
+                println!();
+                println!("--- Rendered comment ---");
+                println!("{body}");
+                println!("--- End of comment ---");
             }
         }
     }

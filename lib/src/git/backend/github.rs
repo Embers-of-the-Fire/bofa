@@ -390,6 +390,44 @@ impl super::GitBackend for GitHubBackend {
         warn!("upload_file is not supported by the GitHub backend");
         Err(GitError::Unsupported("upload_file".to_string()))
     }
+
+    #[instrument(skip(self), fields(owner, repo), err)]
+    async fn list_labels(&self, owner: &str, repo: &str) -> Result<Vec<String>, GitError> {
+        info!(owner, repo, "listing repository labels");
+        let first_page = self
+            .client
+            .issues(owner, repo)
+            .list_labels_for_repo()
+            .per_page(100)
+            .send()
+            .await
+            .map_err(|e| GitError::Api(format!("{e:?}")))?;
+        let labels = self
+            .client
+            .all_pages(first_page)
+            .await
+            .map_err(|e| GitError::Api(format!("{e:?}")))?;
+        info!(count = labels.len(), "listed repository labels");
+        Ok(labels.into_iter().map(|label| label.name).collect())
+    }
+
+    #[instrument(skip(self, labels), fields(owner, repo, id, count = labels.len()), err)]
+    async fn add_labels(
+        &self,
+        owner: &str,
+        repo: &str,
+        id: u64,
+        labels: &[String],
+    ) -> Result<(), GitError> {
+        info!(owner, repo, id, "adding labels to pull request");
+        self.client
+            .issues(owner, repo)
+            .add_labels(id, labels)
+            .await
+            .map_err(|e| GitError::Api(format!("{e:?}")))?;
+        info!(owner, repo, id, "added labels to pull request");
+        Ok(())
+    }
 }
 
 fn account_metadata_from_app(app: &octocrab::models::App) -> AccountMetadata {

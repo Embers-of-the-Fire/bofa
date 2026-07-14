@@ -40,7 +40,7 @@ repo = "my-repo"
 type = "personal_token"
 token = "$GITHUB_TOKEN"
 
-[scanner.sensitive.auth]
+[scanner.sensitive.groups.auth]
 description = "Authentication code"
 paths = ["src/auth/**"]
 members = ["@alice", "@bob"]

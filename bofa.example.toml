@@ -8,11 +8,13 @@ repo = "your-repo"
 
 [worker]
 provider = "github"
-# When dry_run is true, non-fetch actions such as upload, delete, publish, and
-# post_comment are blocked. Fetch actions continue to work.
+# When dry_run is true, non-fetch actions such as upload, delete, publish,
+# post_comment, and add_labels are blocked. Fetch actions continue to work.
 dry_run = false
 # When post_comments is true, the rendered check_pr report is posted as a
-# comment on the target pull request. Defaults to true.
+# comment on the target pull request and configured scanner labels are applied.
+# When false, nothing is posted or applied, but configured labels are still
+# checked for existence and missing ones are reported. Defaults to true.
 post_comments = true
 
 [credentials]
@@ -50,14 +52,19 @@ enabled = true
 
 [scanner.sensitive]
 enabled = true
+# Labels applied to the pull request whenever any sensitive finding matches.
+# Labels that do not exist in the repository are skipped with a warning.
+# labels = ["needs-security-review"]
 # When always_report is true, a report is rendered even if no sensitive files
 # are found. Defaults to false.
 # always_report = false
 
-[scanner.sensitive.example]
+[scanner.sensitive.groups.example]
 description = "Example sensitive path group"
 paths = ["/path/to/repo1", "/path/to/repo2"]
 members = ["alice", "bob"]
+# Labels applied to the pull request when this group matches.
+# labels = ["core-impact", "high-priority"]
 
 # Template overrides.
 # The report template is rendered when the sensitive scanner finds matching files
