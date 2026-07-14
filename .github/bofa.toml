@@ -1,0 +1,27 @@
+[repository]
+owner = "Embers-of-the-Fire"
+repo = "bofa"
+
+[worker]
+provider = "github"
+dry_run = false
+post_comments = true
+
+[credentials]
+type = "app"
+app_id = "$APP_ID"
+key_type = "PEM"
+key = "$APP_SECRET_PEM"
+installation_id = "$APP_INSTALLATION_ID"
+
+[scanner.triage]
+enabled = false
+
+[scanner.sensitive]
+enabled = true
+
+[scanner.sensitive.groups.ci]
+description = "CI/CD"
+paths = [ ".github/**/*" ]
+members = [ "Embers-of-the-Fire" ]
+

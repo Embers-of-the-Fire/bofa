@@ -1,0 +1,25 @@
+name: Bofa
+
+on:
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  bofa:
+    name: Scan PR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Embers-of-the-Fire/use-bofa@main
+        with:
+          command: check pr
+          pr: ${{ github.event.pull_request.number }}
+        env:
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_SECRET_PEM: ${{ secrets.APP_SECRET_PEM }}
+          APP_INSTALLATION_ID: ${{ secrets.APP_INSTALLATION_ID }}
