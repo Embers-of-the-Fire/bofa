@@ -42,6 +42,8 @@ pub struct CheckPrOutput {
     pub body: Option<String>,
     pub status: CommentStatus,
     pub comment_url: Option<String>,
+    pub labels_applied: Vec<String>,
+    pub labels_missing: Vec<String>,
 }
 
 pub const COMMENT_MARKER: &str = "<!-- bofa:check-pr -->";
@@ -218,12 +220,14 @@ mod tests {
                 description: "Core repo".to_string(),
                 matched_paths: vec!["/path/to/repo1/src/main.rs".to_string()],
                 related_persons: vec!["alice".to_string(), "bob".to_string()],
+                labels: Vec::new(),
             },
             SensitiveFinding {
                 name: "other".to_string(),
                 description: "Other".to_string(),
                 matched_paths: vec!["/other/README.md".to_string()],
                 related_persons: vec!["carol".to_string()],
+                labels: Vec::new(),
             },
         ];
         let result = PrCheckResult {
@@ -265,6 +269,7 @@ mod tests {
             description: "Core repo".to_string(),
             matched_paths: vec!["/path/to/repo1/src/main.rs".to_string()],
             related_persons: vec!["alice".to_string()],
+            labels: Vec::new(),
         }];
         let result = PrCheckResult {
             metadata,

@@ -14,6 +14,8 @@ type ChangedFilesFuture = Pin<Box<dyn Future<Output = Result<Vec<ChangedFile>, G
 type PostCommentFuture = Pin<Box<dyn Future<Output = Result<String, GitError>> + Send>>;
 type ListCommentsFuture = Pin<Box<dyn Future<Output = Result<Vec<IssueComment>, GitError>> + Send>>;
 type UpdateCommentFuture = Pin<Box<dyn Future<Output = Result<String, GitError>> + Send>>;
+type ListLabelsFuture = Pin<Box<dyn Future<Output = Result<Vec<String>, GitError>> + Send>>;
+type AddLabelsFuture = Pin<Box<dyn Future<Output = Result<(), GitError>> + Send>>;
 
 pub struct MockGitBackend {
     account_metadata_fn: Mutex<Box<dyn Fn() -> AccountMetadataFuture + Send + Sync>>,
@@ -28,6 +30,10 @@ pub struct MockGitBackend {
     list_comments_calls: Mutex<u32>,
     update_comment_fn: Mutex<Box<dyn Fn() -> UpdateCommentFuture + Send + Sync>>,
     update_comment_calls: Mutex<u32>,
+    list_labels_fn: Mutex<Box<dyn Fn() -> ListLabelsFuture + Send + Sync>>,
+    list_labels_calls: Mutex<u32>,
+    add_labels_fn: Mutex<Box<dyn Fn() -> AddLabelsFuture + Send + Sync>>,
+    add_labels_calls: Mutex<u32>,
 }
 
 impl Default for MockGitBackend {
@@ -85,6 +91,10 @@ impl MockGitBackend {
                 })
             })),
             update_comment_calls: Mutex::new(0),
+            list_labels_fn: Mutex::new(Box::new(move || Box::pin(async { Ok(Vec::new()) }))),
+            list_labels_calls: Mutex::new(0),
+            add_labels_fn: Mutex::new(Box::new(move || Box::pin(async { Ok(()) }))),
+            add_labels_calls: Mutex::new(0),
         }
     }
 
@@ -158,6 +168,30 @@ impl MockGitBackend {
 
     pub fn update_comment_calls(&self) -> u32 {
         *self.update_comment_calls.lock().unwrap()
+    }
+
+    pub fn set_list_labels<F, Fut>(&self, f: F)
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<Vec<String>, GitError>> + Send + 'static,
+    {
+        *self.list_labels_fn.lock().unwrap() = Box::new(move || Box::pin(f()));
+    }
+
+    pub fn list_labels_calls(&self) -> u32 {
+        *self.list_labels_calls.lock().unwrap()
+    }
+
+    pub fn set_add_labels<F, Fut>(&self, f: F)
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<(), GitError>> + Send + 'static,
+    {
+        *self.add_labels_fn.lock().unwrap() = Box::new(move || Box::pin(f()));
+    }
+
+    pub fn add_labels_calls(&self) -> u32 {
+        *self.add_labels_calls.lock().unwrap()
     }
 }
 
@@ -247,6 +281,24 @@ impl super::GitBackend for MockGitBackend {
         _content: &[u8],
     ) -> Result<(), GitError> {
         Err(GitError::Unsupported("upload_file".to_string()))
+    }
+
+    async fn list_labels(&self, _owner: &str, _repo: &str) -> Result<Vec<String>, GitError> {
+        *self.list_labels_calls.lock().unwrap() += 1;
+        let fut = self.list_labels_fn.lock().unwrap()();
+        fut.await
+    }
+
+    async fn add_labels(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _id: u64,
+        _labels: &[String],
+    ) -> Result<(), GitError> {
+        *self.add_labels_calls.lock().unwrap() += 1;
+        let fut = self.add_labels_fn.lock().unwrap()();
+        fut.await
     }
 }
 
@@ -550,5 +602,67 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(backend.update_comment_calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn returns_default_empty_list_labels() {
+        let backend = MockGitBackend::new();
+        let labels = backend.list_labels("owner", "repo").await.unwrap();
+        assert!(labels.is_empty());
+    }
+
+    #[tokio::test]
+    async fn returns_custom_list_labels_from_lambda() {
+        let backend = MockGitBackend::new();
+        backend.set_list_labels(|| async { Ok(vec!["bug".to_string(), "security".to_string()]) });
+        let labels = backend.list_labels("owner", "repo").await.unwrap();
+        assert_eq!(labels, vec!["bug".to_string(), "security".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn returns_list_labels_error_from_lambda() {
+        let backend = MockGitBackend::new();
+        backend.set_list_labels(|| async { Err(GitError::Api("boom".to_string())) });
+        let err = backend.list_labels("owner", "repo").await.unwrap_err();
+        assert!(matches!(err, GitError::Api(_)));
+    }
+
+    #[tokio::test]
+    async fn counts_list_labels_calls() {
+        let backend = MockGitBackend::new();
+        assert_eq!(backend.list_labels_calls(), 0);
+        backend.list_labels("owner", "repo").await.unwrap();
+        assert_eq!(backend.list_labels_calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn add_labels_succeeds_by_default() {
+        let backend = MockGitBackend::new();
+        backend
+            .add_labels("owner", "repo", 1, &["bug".to_string()])
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn returns_add_labels_error_from_lambda() {
+        let backend = MockGitBackend::new();
+        backend.set_add_labels(|| async { Err(GitError::Api("boom".to_string())) });
+        let err = backend
+            .add_labels("owner", "repo", 1, &["bug".to_string()])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, GitError::Api(_)));
+    }
+
+    #[tokio::test]
+    async fn counts_add_labels_calls() {
+        let backend = MockGitBackend::new();
+        assert_eq!(backend.add_labels_calls(), 0);
+        backend
+            .add_labels("owner", "repo", 1, &["bug".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(backend.add_labels_calls(), 1);
     }
 }

@@ -7,6 +7,8 @@ pub struct SensitiveScannerConfig {
     pub enabled: bool,
     #[serde(default)]
     pub always_report: bool,
+    #[serde(default)]
+    pub labels: Vec<String>,
     #[serde(flatten, default)]
     pub item: IndexMap<String, SensitiveScannerItem>,
 }
@@ -17,4 +19,6 @@ pub struct SensitiveScannerItem {
     pub paths: Vec<String>,
     #[serde(default)]
     pub members: Vec<String>,
+    #[serde(default)]
+    pub labels: Vec<String>,
 }

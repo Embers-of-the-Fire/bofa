@@ -29,16 +29,19 @@ fn config_with_sensitive_scanner() -> BofaConfig {
     config.scanner.sensitive = SensitiveScannerConfig {
         enabled: true,
         always_report: false,
+        labels: Vec::new(),
         item: indexmap::indexmap! {
             "core-repo".to_string() => SensitiveScannerItem {
                 description: "Core repo".to_string(),
                 paths: vec!["/path/to/repo1/**".to_string()],
                 members: vec!["alice".to_string(), "bob".to_string()],
+                labels: Vec::new(),
             },
             "other".to_string() => SensitiveScannerItem {
                 description: "Other".to_string(),
                 paths: vec!["/other/**".to_string()],
                 members: vec!["carol".to_string()],
+                labels: Vec::new(),
             },
         },
     };
