@@ -37,7 +37,7 @@ repo = "my-repo"
 type = "personal_token"
 token = "$GITHUB_TOKEN"
 
-[scanner.sensitive.auth]
+[scanner.sensitive.groups.auth]
 description = "Authentication code"
 paths = ["src/auth/**"]
 members = ["@alice", "@bob"]
@@ -78,7 +78,7 @@ Key sections:
 |---------|---------|
 | `[repository]` | Target GitHub repo (required) |
 | `[credentials]` | Auth method and secrets (required) |
-| `[scanner.sensitive.<name>]` | Named glob groups with descriptions and CC lists |
+| `[scanner.sensitive.groups.<name>]` | Named glob groups with descriptions and CC lists |
 | `[template]` | Override report/empty-report/footnote Tera templates |
 | `[worker]` | Dry-run and post-comments toggles |
 | `[log]` | Tracing level, format, and enable/disable |

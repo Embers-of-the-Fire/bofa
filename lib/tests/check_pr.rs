@@ -30,7 +30,7 @@ fn config_with_sensitive_scanner() -> BofaConfig {
         enabled: true,
         always_report: false,
         labels: Vec::new(),
-        item: indexmap::indexmap! {
+        groups: indexmap::indexmap! {
             "core-repo".to_string() => SensitiveScannerItem {
                 description: "Core repo".to_string(),
                 paths: vec!["/path/to/repo1/**".to_string()],

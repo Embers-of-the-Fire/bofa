@@ -59,7 +59,7 @@ enabled = true
 # are found. Defaults to false.
 # always_report = false
 
-[scanner.sensitive.example]
+[scanner.sensitive.groups.example]
 description = "Example sensitive path group"
 paths = ["/path/to/repo1", "/path/to/repo2"]
 members = ["alice", "bob"]

@@ -268,7 +268,7 @@ impl AuthenticatedBofa {
         let mut desired: Vec<String> = self.config.scanner.sensitive.labels.clone();
         for finding in findings {
             for label in &finding.labels {
-                if !desired.contains(label) {
+                if !desired.iter().any(|d| d.eq_ignore_ascii_case(label)) {
                     desired.push(label.clone());
                 }
             }
@@ -281,10 +281,9 @@ impl AuthenticatedBofa {
         let mut applicable = Vec::new();
         let mut missing = Vec::new();
         for label in desired {
-            if existing.contains(&label) {
-                applicable.push(label);
-            } else {
-                missing.push(label);
+            match existing.iter().find(|e| e.eq_ignore_ascii_case(&label)) {
+                Some(canonical) => applicable.push(canonical.clone()),
+                None => missing.push(label),
             }
         }
         if !missing.is_empty() {
@@ -342,7 +341,7 @@ mod tests {
             enabled: true,
             always_report: false,
             labels: Vec::new(),
-            item: indexmap::indexmap! {
+            groups: indexmap::indexmap! {
                 "core-repo".to_string() => SensitiveScannerItem {
                     description: "Core repo".to_string(),
                     paths: vec!["/path/to/repo1/**".to_string()],
@@ -834,7 +833,7 @@ mod tests {
             enabled: true,
             always_report: false,
             labels: vec!["needs-security-review".to_string()],
-            item: indexmap::indexmap! {
+            groups: indexmap::indexmap! {
                 "core-repo".to_string() => SensitiveScannerItem {
                     description: "Core repo".to_string(),
                     paths: vec!["/path/to/repo1/**".to_string()],
@@ -918,6 +917,45 @@ mod tests {
         assert!(output.labels_missing.is_empty());
         assert_eq!(list_calls.load(Ordering::SeqCst), 0);
         assert_eq!(add_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn check_pr_matches_labels_case_insensitively() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let backend = MockGitBackend::new();
+        backend
+            .set_changed_files(|| async { Ok(vec![changed_file("/path/to/repo1/src/main.rs")]) });
+        backend.set_list_labels(|| async {
+            Ok(vec![
+                "Needs-Security-Review".to_string(),
+                "CORE-IMPACT".to_string(),
+            ])
+        });
+        let add_calls = Arc::new(AtomicU32::new(0));
+        let ac = Arc::clone(&add_calls);
+        backend.set_add_labels(move || {
+            let ac = Arc::clone(&ac);
+            async move {
+                ac.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        });
+        let bofa = Bofa::new(config_with_labels())
+            .authenticate_with(Box::new(backend))
+            .await
+            .unwrap();
+        let output = bofa.check_pr(42).await.unwrap();
+        assert_eq!(
+            output.labels_applied,
+            vec![
+                "Needs-Security-Review".to_string(),
+                "CORE-IMPACT".to_string(),
+            ]
+        );
+        assert!(output.labels_missing.is_empty());
+        assert_eq!(add_calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

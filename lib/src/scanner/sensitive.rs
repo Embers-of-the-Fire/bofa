@@ -41,7 +41,7 @@ pub struct SensitiveScanner {
 impl SensitiveScanner {
     pub fn new(config: &SensitiveScannerConfig) -> Result<Self, Error> {
         let mut items = Vec::new();
-        for (name, item) in &config.item {
+        for (name, item) in &config.groups {
             let mut patterns = Vec::new();
             for path in &item.paths {
                 let pattern = Pattern::new(path)
@@ -104,7 +104,7 @@ mod tests {
             enabled: true,
             always_report: false,
             labels: Vec::new(),
-            item: items,
+            groups: items,
         }
     }
 
