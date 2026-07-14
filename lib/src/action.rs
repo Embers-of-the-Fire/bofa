@@ -193,6 +193,21 @@ impl AuthenticatedBofa {
             .await?;
         let scanner_active = self.config.scanner.enabled && self.config.scanner.sensitive.enabled;
         debug!(scanner_active, "scanner active");
+        let mut scanner_active = scanner_active;
+        if scanner_active {
+            let ignore_patterns = self
+                .config
+                .scanner
+                .ignore
+                .iter()
+                .map(|pattern| crate::scanner::compile_glob(pattern))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(check::Error::InvalidIgnoreGlob)?;
+            if crate::scanner::title_ignored(&metadata.title, &ignore_patterns) {
+                info!(title = %metadata.title, "pull request title matches ignore pattern, skipping scanner");
+                scanner_active = false;
+            }
+        }
         let findings = if scanner_active {
             let changed_files = self
                 .context
@@ -345,6 +360,24 @@ impl AuthenticatedBofa {
             .pull_request(&input.owner, &input.repo, input.id)
             .await?;
         debug!(pr = metadata.number, title = %metadata.title, "fetched pull request metadata");
+        let ignore_patterns = self
+            .config
+            .scanner
+            .ignore
+            .iter()
+            .map(|pattern| crate::scanner::compile_glob(pattern))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(triage::Error::InvalidIgnoreGlob)?;
+        if crate::scanner::title_ignored(&metadata.title, &ignore_patterns) {
+            info!(title = %metadata.title, "pull request title matches ignore pattern, skipping triage");
+            return Ok(triage::pr::TriagePrOutput {
+                body: None,
+                status: triage::pr::CommentStatus::Skipped,
+                comment_url: None,
+                labels_applied: Vec::new(),
+                labels_missing: Vec::new(),
+            });
+        }
         let changed_files = self
             .context
             .changed_files(&input.owner, &input.repo, input.id)
@@ -740,6 +773,89 @@ mod tests {
             .unwrap();
         let err = bofa.check_pr(42).await.unwrap_err();
         assert!(matches!(err, Error::Git(GitError::Api(_))));
+    }
+
+    #[tokio::test]
+    async fn check_pr_skips_scan_when_title_matches_ignore_pattern() {
+        let backend = MockGitBackend::new();
+        backend.set_pull_request(|| async {
+            Ok(PullRequestMetadata {
+                number: 42,
+                title: "chore(deps): bump serde".to_string(),
+                state: "closed".to_string(),
+                author: "dave".to_string(),
+                draft: false,
+                url: "https://github.com/owner/repo/pull/42".to_string(),
+            })
+        });
+        backend.set_changed_files(|| async {
+            Ok(vec![
+                changed_file("/path/to/repo1/src/main.rs"),
+                changed_file("/other/README.md"),
+            ])
+        });
+        let mut config = config_with_sensitive_scanner();
+        config.scanner.ignore = vec!["chore(deps):*".to_string()];
+        let bofa = Bofa::new(config)
+            .authenticate_with(Box::new(backend))
+            .await
+            .unwrap();
+        let output = bofa.check_pr(42).await.unwrap();
+        assert!(output.body.is_none());
+        assert_eq!(output.status, CommentStatus::Skipped);
+        assert!(output.comment_url.is_none());
+    }
+
+    #[tokio::test]
+    async fn check_pr_ignore_matching_is_case_insensitive() {
+        let backend = MockGitBackend::new();
+        backend.set_pull_request(|| async {
+            Ok(PullRequestMetadata {
+                number: 42,
+                title: "CHORE(DEPS): bump serde".to_string(),
+                state: "closed".to_string(),
+                author: "dave".to_string(),
+                draft: false,
+                url: "https://github.com/owner/repo/pull/42".to_string(),
+            })
+        });
+        backend
+            .set_changed_files(|| async { Ok(vec![changed_file("/path/to/repo1/src/main.rs")]) });
+        let mut config = config_with_sensitive_scanner();
+        config.scanner.ignore = vec!["chore(deps):*".to_string()];
+        let bofa = Bofa::new(config)
+            .authenticate_with(Box::new(backend))
+            .await
+            .unwrap();
+        let output = bofa.check_pr(42).await.unwrap();
+        assert!(output.body.is_none());
+        assert_eq!(output.status, CommentStatus::Skipped);
+    }
+
+    #[tokio::test]
+    async fn check_pr_returns_invalid_ignore_glob_error() {
+        let backend = MockGitBackend::new();
+        backend.set_pull_request(|| async {
+            Ok(PullRequestMetadata {
+                number: 42,
+                title: "Fix bug".to_string(),
+                state: "closed".to_string(),
+                author: "dave".to_string(),
+                draft: false,
+                url: "https://github.com/owner/repo/pull/42".to_string(),
+            })
+        });
+        let mut config = config_with_sensitive_scanner();
+        config.scanner.ignore = vec!["src/[[*.rs".to_string()];
+        let bofa = Bofa::new(config)
+            .authenticate_with(Box::new(backend))
+            .await
+            .unwrap();
+        let err = bofa.check_pr(42).await.unwrap_err();
+        assert!(matches!(
+            err,
+            Error::Check(check::Error::InvalidIgnoreGlob(_))
+        ));
     }
 
     #[tokio::test]
@@ -1464,6 +1580,62 @@ mod tests {
         let output = bofa.triage_pr(42).await.unwrap();
         assert_eq!(output.labels_applied, vec!["core-impact".to_string()]);
         assert!(output.labels_missing.is_empty());
+    }
+
+    #[tokio::test]
+    async fn triage_pr_skips_when_title_matches_ignore_pattern() {
+        let backend = MockGitBackend::new();
+        backend.set_pull_request(|| async {
+            Ok(PullRequestMetadata {
+                number: 42,
+                title: "chore(deps): bump serde".to_string(),
+                state: "closed".to_string(),
+                author: "dave".to_string(),
+                draft: false,
+                url: "https://github.com/owner/repo/pull/42".to_string(),
+            })
+        });
+        backend
+            .set_changed_files(|| async { Ok(vec![changed_file("/path/to/repo1/src/main.rs")]) });
+        backend.set_list_labels(|| async { Ok(vec!["core-impact".to_string()]) });
+        let mut config = config_with_triage();
+        config.scanner.ignore = vec!["chore(deps):*".to_string()];
+        let bofa = Bofa::new(config)
+            .authenticate_with(Box::new(backend))
+            .await
+            .unwrap();
+        let output = bofa.triage_pr(42).await.unwrap();
+        assert!(output.body.is_none());
+        assert_eq!(output.status, triage::pr::CommentStatus::Skipped);
+        assert!(output.comment_url.is_none());
+        assert!(output.labels_applied.is_empty());
+        assert!(output.labels_missing.is_empty());
+    }
+
+    #[tokio::test]
+    async fn triage_pr_returns_invalid_ignore_glob_error() {
+        let backend = MockGitBackend::new();
+        backend.set_pull_request(|| async {
+            Ok(PullRequestMetadata {
+                number: 42,
+                title: "Fix bug".to_string(),
+                state: "closed".to_string(),
+                author: "dave".to_string(),
+                draft: false,
+                url: "https://github.com/owner/repo/pull/42".to_string(),
+            })
+        });
+        let mut config = config_with_triage();
+        config.scanner.ignore = vec!["src/[[*.rs".to_string()];
+        let bofa = Bofa::new(config)
+            .authenticate_with(Box::new(backend))
+            .await
+            .unwrap();
+        let err = bofa.triage_pr(42).await.unwrap_err();
+        assert!(matches!(
+            err,
+            Error::Triage(triage::Error::InvalidIgnoreGlob(_))
+        ));
     }
 
     #[tokio::test]

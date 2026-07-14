@@ -11,6 +11,8 @@ pub struct ScannerConfig {
     pub sensitive: sensitive::SensitiveScannerConfig,
     #[serde(default)]
     pub triage: triage::TriageConfig,
+    #[serde(default)]
+    pub ignore: Vec<String>,
 }
 
 impl Default for ScannerConfig {
@@ -19,6 +21,7 @@ impl Default for ScannerConfig {
             enabled: true,
             sensitive: Default::default(),
             triage: Default::default(),
+            ignore: Vec::new(),
         }
     }
 }

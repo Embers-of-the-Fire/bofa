@@ -49,6 +49,10 @@ installation_id = "$INSTALLATION_ID"
 # When enabled is false, the entire scanner step is skipped during check pr.
 # Defaults to true.
 enabled = true
+# Glob patterns matched against the pull request title. If the title matches
+# any pattern, scanning is skipped for this pull request. Matching is
+# case-insensitive.
+# ignore = ["*[bot]*", "chore(deps):*"]
 
 [scanner.sensitive]
 enabled = true
