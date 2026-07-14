@@ -1,13 +1,7 @@
 use crate::config::scanner::triage::TriageConfig;
 use crate::git::ChangedFile;
-use glob::{MatchOptions, Pattern};
+use glob::Pattern;
 use serde::Serialize;
-
-const MATCH_OPTIONS: MatchOptions = MatchOptions {
-    case_sensitive: true,
-    require_literal_separator: true,
-    require_literal_leading_dot: false,
-};
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TriageFinding {
@@ -42,8 +36,7 @@ impl TriageScanner {
         for (name, group) in &config.groups {
             let mut patterns = Vec::new();
             for path in &group.paths {
-                let pattern = Pattern::new(path)
-                    .map_err(|err| Error::InvalidGlob(format!("{}: {}", path, err)))?;
+                let pattern = super::compile_glob(path).map_err(Error::InvalidGlob)?;
                 patterns.push(pattern);
             }
             groups.push(CompiledGroup {
@@ -59,16 +52,7 @@ impl TriageScanner {
     pub fn scan(&self, files: &[ChangedFile]) -> Vec<TriageFinding> {
         let mut findings = Vec::new();
         for group in &self.groups {
-            let matched: Vec<String> = files
-                .iter()
-                .filter(|file| {
-                    group
-                        .patterns
-                        .iter()
-                        .any(|pattern| pattern.matches_with(&file.path, MATCH_OPTIONS))
-                })
-                .map(|file| file.path.clone())
-                .collect();
+            let matched = super::matching_paths(files, &group.patterns);
             if !matched.is_empty() {
                 findings.push(TriageFinding {
                     name: group.name.clone(),

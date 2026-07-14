@@ -4,15 +4,14 @@ use crate::git::context::GitContext;
 use crate::git::{AccountType, Error as GitError};
 use crate::scanner::sensitive::SensitiveScanner;
 use crate::scanner::triage::TriageScanner;
-use check::pr::{
-    CommentStatus as CheckCommentStatus, attach_marker as attach_check_marker,
-    content_unchanged as check_content_unchanged, has_marker as check_has_marker,
-};
+use check::pr::{CHECK_COMMENT_MARKER, CommentStatus as CheckCommentStatus};
 use std::path::Path;
 use thiserror::Error;
 use tracing::{debug, info, warn};
+use triage::pr::TRIAGE_COMMENT_MARKER;
 
 pub mod check;
+pub mod comment_marker;
 pub mod triage;
 
 #[derive(Debug, Error)]
@@ -95,6 +94,56 @@ impl Bofa {
 pub struct AuthenticatedBofa {
     config: BofaConfig,
     context: GitContext,
+}
+
+trait Labelled {
+    fn labels(&self) -> &[String];
+}
+
+impl Labelled for crate::scanner::triage::TriageFinding {
+    fn labels(&self) -> &[String] {
+        &self.labels
+    }
+}
+
+impl Labelled for crate::scanner::sensitive::SensitiveFinding {
+    fn labels(&self) -> &[String] {
+        &self.labels
+    }
+}
+
+trait PrIdentity {
+    fn owner(&self) -> &str;
+    fn repo(&self) -> &str;
+    fn id(&self) -> u64;
+}
+
+impl PrIdentity for triage::pr::PrInput {
+    fn owner(&self) -> &str {
+        &self.owner
+    }
+
+    fn repo(&self) -> &str {
+        &self.repo
+    }
+
+    fn id(&self) -> u64 {
+        self.id
+    }
+}
+
+impl PrIdentity for check::pr::PrInput {
+    fn owner(&self) -> &str {
+        &self.owner
+    }
+
+    fn repo(&self) -> &str {
+        &self.repo
+    }
+
+    fn id(&self) -> u64 {
+        self.id
+    }
 }
 
 impl AuthenticatedBofa {
@@ -200,7 +249,7 @@ impl AuthenticatedBofa {
                 let existing = comments
                     .into_iter()
                     .filter(|comment| {
-                        check_has_marker(&comment.body)
+                        CHECK_COMMENT_MARKER.has(&comment.body)
                             && account_login
                                 .as_ref()
                                 .is_some_and(|me| &comment.author_login == me)
@@ -215,12 +264,14 @@ impl AuthenticatedBofa {
                                 &input.owner,
                                 &input.repo,
                                 input.id,
-                                &attach_check_marker(body),
+                                &CHECK_COMMENT_MARKER.attach(body),
                             )
                             .await?;
                         (CheckCommentStatus::Created, Some(url))
                     }
-                    Some(comment) if check_content_unchanged(&comment.body, body) => {
+                    Some(comment)
+                        if CHECK_COMMENT_MARKER.content_unchanged(&comment.body, body) =>
+                    {
                         info!("comment unchanged, skipping update");
                         (CheckCommentStatus::Unchanged, Some(comment.url))
                     }
@@ -232,7 +283,7 @@ impl AuthenticatedBofa {
                                 &input.owner,
                                 &input.repo,
                                 comment.id,
-                                &attach_check_marker(body),
+                                &CHECK_COMMENT_MARKER.attach(body),
                             )
                             .await?;
                         (CheckCommentStatus::Updated, Some(url))
@@ -277,11 +328,6 @@ impl AuthenticatedBofa {
             repo = %input.repo,
             "triaging pull request"
         );
-        let metadata = self
-            .context
-            .pull_request(&input.owner, &input.repo, input.id)
-            .await?;
-        debug!(pr = metadata.number, title = %metadata.title, "fetched pull request metadata");
         let triage_enabled = self.config.scanner.enabled && self.config.scanner.triage.enabled;
         debug!(triage_enabled, "triage active");
         if !triage_enabled {
@@ -294,6 +340,11 @@ impl AuthenticatedBofa {
                 labels_missing: Vec::new(),
             });
         }
+        let metadata = self
+            .context
+            .pull_request(&input.owner, &input.repo, input.id)
+            .await?;
+        debug!(pr = metadata.number, title = %metadata.title, "fetched pull request metadata");
         let changed_files = self
             .context
             .changed_files(&input.owner, &input.repo, input.id)
@@ -338,7 +389,7 @@ impl AuthenticatedBofa {
                 let existing = comments
                     .into_iter()
                     .filter(|comment| {
-                        triage::pr::has_marker(&comment.body)
+                        TRIAGE_COMMENT_MARKER.has(&comment.body)
                             && account_login
                                 .as_ref()
                                 .is_some_and(|me| &comment.author_login == me)
@@ -353,12 +404,14 @@ impl AuthenticatedBofa {
                                 &input.owner,
                                 &input.repo,
                                 input.id,
-                                &triage::pr::attach_marker(body),
+                                &TRIAGE_COMMENT_MARKER.attach(body),
                             )
                             .await?;
                         (triage::pr::CommentStatus::Created, Some(url))
                     }
-                    Some(comment) if triage::pr::content_unchanged(&comment.body, body) => {
+                    Some(comment)
+                        if TRIAGE_COMMENT_MARKER.content_unchanged(&comment.body, body) =>
+                    {
                         info!("triage comment unchanged, skipping update");
                         (triage::pr::CommentStatus::Unchanged, Some(comment.url))
                     }
@@ -370,7 +423,7 @@ impl AuthenticatedBofa {
                                 &input.owner,
                                 &input.repo,
                                 comment.id,
-                                &triage::pr::attach_marker(body),
+                                &TRIAGE_COMMENT_MARKER.attach(body),
                             )
                             .await?;
                         (triage::pr::CommentStatus::Updated, Some(url))
@@ -413,50 +466,8 @@ impl AuthenticatedBofa {
         input: &triage::pr::PrInput,
         findings: &[crate::scanner::triage::TriageFinding],
     ) -> Result<(Vec<String>, Vec<String>), Error> {
-        if findings.is_empty() {
-            return Ok((Vec::new(), Vec::new()));
-        }
-        let mut desired: Vec<String> = Vec::new();
-        for finding in findings {
-            for label in &finding.labels {
-                if !desired.iter().any(|d| d.eq_ignore_ascii_case(label)) {
-                    desired.push(label.clone());
-                }
-            }
-        }
-        if desired.is_empty() {
-            return Ok((Vec::new(), Vec::new()));
-        }
-        info!(
-            count = desired.len(),
-            "resolving triage labels for pull request"
-        );
-        let existing = self.context.list_labels(&input.owner, &input.repo).await?;
-        let mut applicable = Vec::new();
-        let mut missing = Vec::new();
-        for label in desired {
-            match existing.iter().find(|e| e.eq_ignore_ascii_case(&label)) {
-                Some(canonical) => applicable.push(canonical.clone()),
-                None => missing.push(label),
-            }
-        }
-        if !missing.is_empty() {
-            warn!(
-                missing = ?missing,
-                "configured triage labels not present in repository, skipping them"
-            );
-        }
-        if applicable.is_empty() {
-            return Ok((Vec::new(), missing));
-        }
-        info!(
-            count = applicable.len(),
-            "adding triage labels to pull request"
-        );
-        self.context
-            .add_labels(&input.owner, &input.repo, input.id, &applicable)
-            .await?;
-        Ok((applicable, missing))
+        self.resolve_and_apply_labels(input, Vec::new(), findings, "triage", || true, "")
+            .await
     }
 
     async fn apply_labels(
@@ -464,12 +475,36 @@ impl AuthenticatedBofa {
         input: &check::pr::PrInput,
         findings: &[crate::scanner::sensitive::SensitiveFinding],
     ) -> Result<(Vec<String>, Vec<String>), Error> {
+        let post_comments = self.config.worker.post_comments;
+        self.resolve_and_apply_labels(
+            input,
+            self.config.scanner.sensitive.labels.clone(),
+            findings,
+            "",
+            || post_comments,
+            "post_comments disabled, not applying labels",
+        )
+        .await
+    }
+
+    async fn resolve_and_apply_labels<F>(
+        &self,
+        input: &impl PrIdentity,
+        seed_labels: Vec<String>,
+        findings: &[F],
+        label_kind: &str,
+        add_gate: impl Fn() -> bool,
+        skip_log: &str,
+    ) -> Result<(Vec<String>, Vec<String>), Error>
+    where
+        F: Labelled,
+    {
         if findings.is_empty() {
             return Ok((Vec::new(), Vec::new()));
         }
-        let mut desired: Vec<String> = self.config.scanner.sensitive.labels.clone();
+        let mut desired = seed_labels;
         for finding in findings {
-            for label in &finding.labels {
+            for label in finding.labels() {
                 if !desired.iter().any(|d| d.eq_ignore_ascii_case(label)) {
                     desired.push(label.clone());
                 }
@@ -478,8 +513,19 @@ impl AuthenticatedBofa {
         if desired.is_empty() {
             return Ok((Vec::new(), Vec::new()));
         }
-        info!(count = desired.len(), "resolving labels for pull request");
-        let existing = self.context.list_labels(&input.owner, &input.repo).await?;
+        let kind_prefix = if label_kind.is_empty() {
+            String::new()
+        } else {
+            format!("{label_kind} ")
+        };
+        info!(
+            count = desired.len(),
+            "resolving {}labels for pull request", kind_prefix
+        );
+        let existing = self
+            .context
+            .list_labels(input.owner(), input.repo())
+            .await?;
         let mut applicable = Vec::new();
         let mut missing = Vec::new();
         for label in desired {
@@ -491,22 +537,23 @@ impl AuthenticatedBofa {
         if !missing.is_empty() {
             warn!(
                 missing = ?missing,
-                "configured labels not present in repository, skipping them"
+                "configured {}labels not present in repository, skipping them",
+                kind_prefix
             );
         }
         if applicable.is_empty() {
             return Ok((Vec::new(), missing));
         }
-        if !self.config.worker.post_comments {
-            info!(
-                count = applicable.len(),
-                "post_comments disabled, not applying labels"
-            );
+        if !add_gate() {
+            info!(count = applicable.len(), "{skip_log}");
             return Ok((Vec::new(), missing));
         }
-        info!(count = applicable.len(), "adding labels to pull request");
+        info!(
+            count = applicable.len(),
+            "adding {}labels to pull request", kind_prefix
+        );
         self.context
-            .add_labels(&input.owner, &input.repo, input.id, &applicable)
+            .add_labels(input.owner(), input.repo(), input.id(), &applicable)
             .await?;
         Ok((applicable, missing))
     }
@@ -515,7 +562,7 @@ impl AuthenticatedBofa {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::action::check::pr::{CommentStatus, attach_marker};
+    use crate::action::check::pr::{CHECK_COMMENT_MARKER, CommentStatus};
     use crate::config::BofaConfig;
     use crate::config::credentials::{Credentials, PersonalTokenCredentials, SecretString};
     use crate::config::scanner::sensitive::{SensitiveScannerConfig, SensitiveScannerItem};
@@ -581,7 +628,7 @@ mod tests {
     fn marked_comment(id: u64, author: &str, rendered: &str) -> crate::git::IssueComment {
         crate::git::IssueComment {
             id,
-            body: attach_marker(rendered),
+            body: CHECK_COMMENT_MARKER.attach(rendered),
             author_login: author.to_string(),
             url: format!("https://github.com/owner/repo/pull/42#issuecomment-{id}"),
         }
@@ -1367,7 +1414,7 @@ mod tests {
     fn triage_marked_comment(id: u64, author: &str, rendered: &str) -> crate::git::IssueComment {
         crate::git::IssueComment {
             id,
-            body: triage::pr::attach_marker(rendered),
+            body: TRIAGE_COMMENT_MARKER.attach(rendered),
             author_login: author.to_string(),
             url: format!("https://github.com/owner/repo/pull/42#issuecomment-{id}"),
         }

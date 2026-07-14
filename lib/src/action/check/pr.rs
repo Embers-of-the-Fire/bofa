@@ -1,3 +1,4 @@
+use crate::action::comment_marker::CommentMarker;
 use crate::config::repository::RepositoryConfig;
 use crate::git::PullRequestMetadata;
 use crate::scanner::sensitive::SensitiveFinding;
@@ -47,25 +48,7 @@ pub struct CheckPrOutput {
 }
 
 pub const COMMENT_MARKER: &str = "<!-- bofa:check-pr -->";
-
-pub fn attach_marker(rendered: &str) -> String {
-    format!("{rendered}\n\n{COMMENT_MARKER}")
-}
-
-pub fn has_marker(body: &str) -> bool {
-    body.contains(COMMENT_MARKER)
-}
-
-pub fn strip_marker(body: &str) -> &str {
-    match body.find(COMMENT_MARKER) {
-        Some(idx) => body[..idx].trim_end(),
-        None => body.trim_end(),
-    }
-}
-
-pub fn content_unchanged(existing_body: &str, new_rendered: &str) -> bool {
-    strip_marker(existing_body) == new_rendered.trim_end()
-}
+pub const CHECK_COMMENT_MARKER: CommentMarker = CommentMarker::new(COMMENT_MARKER);
 
 #[derive(Debug, Clone)]
 pub struct PrCheckResult {
@@ -126,39 +109,6 @@ impl PrCheckResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn attach_marker_appends_hidden_marker() {
-        let body = attach_marker("report body");
-        assert!(body.starts_with("report body"));
-        assert!(has_marker(&body));
-        assert!(body.ends_with(COMMENT_MARKER));
-    }
-
-    #[test]
-    fn has_marker_detects_marker_substring() {
-        assert!(has_marker("text <!-- bofa:check-pr -->"));
-        assert!(!has_marker("plain text"));
-    }
-
-    #[test]
-    fn strip_marker_recovers_original_body() {
-        let body = attach_marker("report body");
-        assert_eq!(strip_marker(&body), "report body");
-    }
-
-    #[test]
-    fn strip_marker_trims_when_marker_absent() {
-        assert_eq!(strip_marker("report body  \n\n"), "report body");
-    }
-
-    #[test]
-    fn content_unchanged_compares_marker_stripped_content() {
-        let existing = attach_marker("report body");
-        assert!(content_unchanged(&existing, "report body"));
-        assert!(content_unchanged(&existing, "report body\n\n"));
-        assert!(!content_unchanged(&existing, "different body"));
-    }
 
     #[test]
     fn builds_from_repository() {
