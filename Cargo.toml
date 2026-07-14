@@ -3,13 +3,13 @@ resolver = "3"
 members = ["bin/bofa-cli", "lib"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Embers-of-the-Fire/bofa"
 
 [workspace.dependencies]
-bofa-lib = { version = "0.1.0", path = "lib" }
+bofa-lib = { version = "0.2.0", path = "lib" }
 
 async-trait = "0.1"
 base64 = "0.22"
