@@ -1,5 +1,5 @@
 use crate::git::{
-    AccountMetadata, AccountType, ChangedFile, Error as GitError, PullRequestMetadata,
+    AccountMetadata, AccountType, ChangedFile, Error as GitError, IssueComment, PullRequestMetadata,
 };
 use async_trait::async_trait;
 use std::future::Future;
@@ -12,6 +12,8 @@ type PullRequestFuture =
     Pin<Box<dyn Future<Output = Result<PullRequestMetadata, GitError>> + Send>>;
 type ChangedFilesFuture = Pin<Box<dyn Future<Output = Result<Vec<ChangedFile>, GitError>> + Send>>;
 type PostCommentFuture = Pin<Box<dyn Future<Output = Result<String, GitError>> + Send>>;
+type ListCommentsFuture = Pin<Box<dyn Future<Output = Result<Vec<IssueComment>, GitError>> + Send>>;
+type UpdateCommentFuture = Pin<Box<dyn Future<Output = Result<String, GitError>> + Send>>;
 
 pub struct MockGitBackend {
     account_metadata_fn: Mutex<Box<dyn Fn() -> AccountMetadataFuture + Send + Sync>>,
@@ -22,6 +24,10 @@ pub struct MockGitBackend {
     changed_files_calls: Mutex<u32>,
     post_comment_fn: Mutex<Box<dyn Fn() -> PostCommentFuture + Send + Sync>>,
     post_comment_calls: Mutex<u32>,
+    list_comments_fn: Mutex<Box<dyn Fn() -> ListCommentsFuture + Send + Sync>>,
+    list_comments_calls: Mutex<u32>,
+    update_comment_fn: Mutex<Box<dyn Fn() -> UpdateCommentFuture + Send + Sync>>,
+    update_comment_calls: Mutex<u32>,
 }
 
 impl Default for MockGitBackend {
@@ -71,6 +77,14 @@ impl MockGitBackend {
                 })
             })),
             post_comment_calls: Mutex::new(0),
+            list_comments_fn: Mutex::new(Box::new(move || Box::pin(async { Ok(Vec::new()) }))),
+            list_comments_calls: Mutex::new(0),
+            update_comment_fn: Mutex::new(Box::new(move || {
+                Box::pin(async {
+                    Ok("https://github.com/test/repo/pull/1#issuecomment-1".to_string())
+                })
+            })),
+            update_comment_calls: Mutex::new(0),
         }
     }
 
@@ -121,6 +135,30 @@ impl MockGitBackend {
     pub fn post_comment_calls(&self) -> u32 {
         *self.post_comment_calls.lock().unwrap()
     }
+
+    pub fn set_list_comments<F, Fut>(&self, f: F)
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<Vec<IssueComment>, GitError>> + Send + 'static,
+    {
+        *self.list_comments_fn.lock().unwrap() = Box::new(move || Box::pin(f()));
+    }
+
+    pub fn list_comments_calls(&self) -> u32 {
+        *self.list_comments_calls.lock().unwrap()
+    }
+
+    pub fn set_update_comment<F, Fut>(&self, f: F)
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<String, GitError>> + Send + 'static,
+    {
+        *self.update_comment_fn.lock().unwrap() = Box::new(move || Box::pin(f()));
+    }
+
+    pub fn update_comment_calls(&self) -> u32 {
+        *self.update_comment_calls.lock().unwrap()
+    }
 }
 
 #[async_trait]
@@ -162,6 +200,29 @@ impl super::GitBackend for MockGitBackend {
     ) -> Result<String, GitError> {
         *self.post_comment_calls.lock().unwrap() += 1;
         let fut = self.post_comment_fn.lock().unwrap()();
+        fut.await
+    }
+
+    async fn list_comments(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _id: u64,
+    ) -> Result<Vec<IssueComment>, GitError> {
+        *self.list_comments_calls.lock().unwrap() += 1;
+        let fut = self.list_comments_fn.lock().unwrap()();
+        fut.await
+    }
+
+    async fn update_comment(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _comment_id: u64,
+        _body: &str,
+    ) -> Result<String, GitError> {
+        *self.update_comment_calls.lock().unwrap() += 1;
+        let fut = self.update_comment_fn.lock().unwrap()();
         fut.await
     }
 
@@ -401,5 +462,93 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(backend.post_comment_calls(), 2);
+    }
+
+    #[tokio::test]
+    async fn returns_default_empty_list_comments() {
+        let backend = MockGitBackend::new();
+        let comments = backend.list_comments("owner", "repo", 1).await.unwrap();
+        assert!(comments.is_empty());
+    }
+
+    #[tokio::test]
+    async fn returns_custom_list_comments_from_lambda() {
+        let backend = MockGitBackend::new();
+        backend.set_list_comments(|| async {
+            Ok(vec![IssueComment {
+                id: 7,
+                body: "hello".to_string(),
+                author_login: "octocat".to_string(),
+                url: "https://github.com/test/repo/pull/1#issuecomment-7".to_string(),
+            }])
+        });
+        let comments = backend.list_comments("owner", "repo", 1).await.unwrap();
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].id, 7);
+        assert_eq!(comments[0].author_login, "octocat");
+    }
+
+    #[tokio::test]
+    async fn returns_list_comments_error_from_lambda() {
+        let backend = MockGitBackend::new();
+        backend.set_list_comments(|| async { Err(GitError::Api("boom".to_string())) });
+        let err = backend.list_comments("owner", "repo", 1).await.unwrap_err();
+        assert!(matches!(err, GitError::Api(_)));
+    }
+
+    #[tokio::test]
+    async fn counts_list_comments_calls() {
+        let backend = MockGitBackend::new();
+        assert_eq!(backend.list_comments_calls(), 0);
+        backend.list_comments("owner", "repo", 1).await.unwrap();
+        assert_eq!(backend.list_comments_calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn returns_default_update_comment_url() {
+        let backend = MockGitBackend::new();
+        let url = backend
+            .update_comment("owner", "repo", 7, "body")
+            .await
+            .unwrap();
+        assert_eq!(url, "https://github.com/test/repo/pull/1#issuecomment-1");
+    }
+
+    #[tokio::test]
+    async fn returns_custom_update_comment_url_from_lambda() {
+        let backend = MockGitBackend::new();
+        backend.set_update_comment(|| async {
+            Ok("https://github.com/custom/repo/pull/42#issuecomment-99".to_string())
+        });
+        let url = backend
+            .update_comment("owner", "repo", 7, "body")
+            .await
+            .unwrap();
+        assert_eq!(
+            url,
+            "https://github.com/custom/repo/pull/42#issuecomment-99"
+        );
+    }
+
+    #[tokio::test]
+    async fn returns_update_comment_error_from_lambda() {
+        let backend = MockGitBackend::new();
+        backend.set_update_comment(|| async { Err(GitError::Api("boom".to_string())) });
+        let err = backend
+            .update_comment("owner", "repo", 7, "body")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, GitError::Api(_)));
+    }
+
+    #[tokio::test]
+    async fn counts_update_comment_calls() {
+        let backend = MockGitBackend::new();
+        assert_eq!(backend.update_comment_calls(), 0);
+        backend
+            .update_comment("owner", "repo", 7, "body")
+            .await
+            .unwrap();
+        assert_eq!(backend.update_comment_calls(), 1);
     }
 }

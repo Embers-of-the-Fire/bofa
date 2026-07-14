@@ -46,6 +46,29 @@ impl GitContext {
         self.backend.post_comment(owner, repo, id, body).await
     }
 
+    #[instrument(skip(self), fields(owner, repo, id), err)]
+    pub async fn list_comments(
+        &self,
+        owner: &str,
+        repo: &str,
+        id: u64,
+    ) -> Result<Vec<super::IssueComment>, super::Error> {
+        self.backend.list_comments(owner, repo, id).await
+    }
+
+    #[instrument(skip(self, body), fields(owner, repo, comment_id), err)]
+    pub async fn update_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        comment_id: u64,
+        body: &str,
+    ) -> Result<String, super::Error> {
+        self.backend
+            .update_comment(owner, repo, comment_id, body)
+            .await
+    }
+
     #[instrument(skip(self), fields(owner, repo, branch), err)]
     pub async fn delete_branch(
         &self,

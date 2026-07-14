@@ -71,3 +71,11 @@ pub struct ChangedFile {
     pub path: String,
     pub status: FileChangeStatus,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IssueComment {
+    pub id: u64,
+    pub body: String,
+    pub author_login: String,
+    pub url: String,
+}

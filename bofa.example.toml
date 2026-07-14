@@ -82,8 +82,9 @@ members = ["alice", "bob"]
 # empty_report = "No sensitive files found."
 
 # The footnote template is appended to every comment bofa posts. It receives an
-# `app_name` variable holding the authenticated account/app name (empty when it
-# could not be resolved). Set footnote = "" to disable the footnote entirely.
+# `app_name` variable holding the authenticated account login (for GitHub Apps
+# this is the bot login, e.g. "my-app[bot]"; empty when it could not be
+# resolved). Set footnote = "" to disable the footnote entirely.
 # If omitted, the default footnote is used.
 [template.comment]
 # footnote = ""

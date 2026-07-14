@@ -29,6 +29,19 @@ pub trait GitBackend: Send + Sync {
         id: u64,
         body: &str,
     ) -> Result<String, super::Error>;
+    async fn list_comments(
+        &self,
+        owner: &str,
+        repo: &str,
+        id: u64,
+    ) -> Result<Vec<super::IssueComment>, super::Error>;
+    async fn update_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        comment_id: u64,
+        body: &str,
+    ) -> Result<String, super::Error>;
     async fn delete_branch(
         &self,
         owner: &str,
