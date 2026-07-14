@@ -1,5 +1,5 @@
 use bofa_lib::action::Bofa;
-use bofa_lib::action::check::pr::{CommentStatus, attach_marker};
+use bofa_lib::action::check::pr::{CHECK_COMMENT_MARKER, CommentStatus};
 use bofa_lib::config::BofaConfig;
 use bofa_lib::config::credentials::{Credentials, PersonalTokenCredentials, SecretString};
 use bofa_lib::config::repository::RepositoryConfig;
@@ -364,7 +364,7 @@ const EMPTY_REPORT_RENDERED: &str = "No sensitive files found.\n\n<sub>\n\nThis 
 fn marked_comment(id: u64, author: &str, rendered: &str) -> IssueComment {
     IssueComment {
         id,
-        body: attach_marker(rendered),
+        body: CHECK_COMMENT_MARKER.attach(rendered),
         author_login: author.to_string(),
         url: format!("https://github.com/owner/repo/pull/42#issuecomment-{id}"),
     }

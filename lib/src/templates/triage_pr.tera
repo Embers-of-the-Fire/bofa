@@ -1,0 +1,4 @@
+Automatically triage the pull request to:
+{% for finding in findings -%}
+- {{ finding.name }}: {{ finding.description }}
+{% endfor -%}

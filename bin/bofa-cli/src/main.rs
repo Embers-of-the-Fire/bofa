@@ -21,10 +21,19 @@ enum Commands {
         #[command(subcommand)]
         command: CheckCommands,
     },
+    Triage {
+        #[command(subcommand)]
+        command: TriageCommands,
+    },
 }
 
 #[derive(Subcommand)]
 enum CheckCommands {
+    Pr { id: u64 },
+}
+
+#[derive(Subcommand)]
+enum TriageCommands {
     Pr { id: u64 },
 }
 
@@ -38,7 +47,7 @@ async fn main() {
 
     bofa_lib::logging::init(&bofa.config().log, true);
 
-    match cli.command {
+    match &cli.command {
         Commands::Config => {
             println!("{:#?}", bofa.config());
         }
@@ -52,48 +61,134 @@ async fn main() {
         }
         Commands::Check {
             command: CheckCommands::Pr { id },
+        }
+        | Commands::Triage {
+            command: TriageCommands::Pr { id },
         } => {
-            use bofa_lib::action::check::pr::CommentStatus;
+            let is_check = matches!(&cli.command, Commands::Check { .. });
             let bofa = authenticate(bofa).await;
-            let result = bofa.check_pr(id).await.unwrap_or_else(|err| {
-                eprintln!("Check failed: {err}");
-                std::process::exit(1);
-            });
-            match result.status {
-                CommentStatus::Created => {
-                    println!("Comment: created {}", result.comment_url.unwrap());
-                }
-                CommentStatus::Updated => {
-                    println!("Comment: updated {}", result.comment_url.unwrap());
-                }
-                CommentStatus::Unchanged => {
-                    println!("Comment: up to date {}", result.comment_url.unwrap());
-                }
-                CommentStatus::Skipped => {
-                    if result.body.is_some() {
-                        println!("Comment: not posted");
-                    } else {
-                        println!("Comment: none (nothing to report)");
-                    }
-                }
+            let result = if is_check {
+                bofa.check_pr(*id)
+                    .await
+                    .map(PrResult::from)
+                    .unwrap_or_else(|err| {
+                        eprintln!("Check failed: {err}");
+                        std::process::exit(1);
+                    })
+            } else {
+                bofa.triage_pr(*id)
+                    .await
+                    .map(PrResult::from)
+                    .unwrap_or_else(|err| {
+                        eprintln!("Triage failed: {err}");
+                        std::process::exit(1);
+                    })
+            };
+            print_pr_result(result, is_check);
+        }
+    }
+}
+
+fn print_pr_result(result: PrResult, is_check: bool) {
+    use self::LocalCommentStatus as CommentStatus;
+    match result.status {
+        CommentStatus::Created => {
+            println!("Comment: created {}", result.comment_url.unwrap());
+        }
+        CommentStatus::Updated => {
+            println!("Comment: updated {}", result.comment_url.unwrap());
+        }
+        CommentStatus::Unchanged => {
+            println!("Comment: up to date {}", result.comment_url.unwrap());
+        }
+        CommentStatus::Skipped => {
+            if result.body.is_some() {
+                println!("Comment: not posted");
+            } else if is_check {
+                println!("Comment: none (nothing to report)");
+            } else {
+                println!("Comment: none (no triage groups matched)");
             }
-            if !result.labels_applied.is_empty() {
-                println!("Applied labels: {}", result.labels_applied.join(", "));
-            }
-            if !result.labels_missing.is_empty() {
-                println!(
-                    "Missing labels (skipped): {}",
-                    result.labels_missing.join(", ")
-                );
-            }
-            if matches!(result.status, CommentStatus::Skipped)
-                && let Some(body) = result.body
-            {
-                println!();
-                println!("--- Rendered comment ---");
-                println!("{body}");
-                println!("--- End of comment ---");
-            }
+        }
+    }
+    if !result.labels_applied.is_empty() {
+        println!("Applied labels: {}", result.labels_applied.join(", "));
+    }
+    if !result.labels_missing.is_empty() {
+        println!(
+            "Missing labels (skipped): {}",
+            result.labels_missing.join(", ")
+        );
+    }
+    if matches!(result.status, CommentStatus::Skipped)
+        && let Some(body) = result.body
+    {
+        println!();
+        println!("--- Rendered comment ---");
+        println!("{body}");
+        println!("--- End of comment ---");
+    }
+}
+
+#[derive(Debug)]
+enum LocalCommentStatus {
+    Created,
+    Updated,
+    Unchanged,
+    Skipped,
+}
+
+#[derive(Debug)]
+struct PrResult {
+    body: Option<String>,
+    status: LocalCommentStatus,
+    comment_url: Option<String>,
+    labels_applied: Vec<String>,
+    labels_missing: Vec<String>,
+}
+
+impl From<bofa_lib::action::check::pr::CheckPrOutput> for PrResult {
+    fn from(output: bofa_lib::action::check::pr::CheckPrOutput) -> Self {
+        Self {
+            body: output.body,
+            status: output.status.into(),
+            comment_url: output.comment_url,
+            labels_applied: output.labels_applied,
+            labels_missing: output.labels_missing,
+        }
+    }
+}
+
+impl From<bofa_lib::action::triage::pr::TriagePrOutput> for PrResult {
+    fn from(output: bofa_lib::action::triage::pr::TriagePrOutput) -> Self {
+        Self {
+            body: output.body,
+            status: output.status.into(),
+            comment_url: output.comment_url,
+            labels_applied: output.labels_applied,
+            labels_missing: output.labels_missing,
+        }
+    }
+}
+
+impl From<bofa_lib::action::check::pr::CommentStatus> for LocalCommentStatus {
+    fn from(status: bofa_lib::action::check::pr::CommentStatus) -> Self {
+        match status {
+            bofa_lib::action::check::pr::CommentStatus::Created => LocalCommentStatus::Created,
+            bofa_lib::action::check::pr::CommentStatus::Updated => LocalCommentStatus::Updated,
+            bofa_lib::action::check::pr::CommentStatus::Unchanged => LocalCommentStatus::Unchanged,
+            bofa_lib::action::check::pr::CommentStatus::Skipped => LocalCommentStatus::Skipped,
+        }
+    }
+}
+
+impl From<bofa_lib::action::triage::pr::CommentStatus> for LocalCommentStatus {
+    fn from(status: bofa_lib::action::triage::pr::CommentStatus) -> Self {
+        match status {
+            bofa_lib::action::triage::pr::CommentStatus::Created => LocalCommentStatus::Created,
+            bofa_lib::action::triage::pr::CommentStatus::Updated => LocalCommentStatus::Updated,
+            bofa_lib::action::triage::pr::CommentStatus::Unchanged => LocalCommentStatus::Unchanged,
+            bofa_lib::action::triage::pr::CommentStatus::Skipped => LocalCommentStatus::Skipped,
         }
     }
 }

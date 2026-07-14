@@ -66,6 +66,20 @@ members = ["alice", "bob"]
 # Labels applied to the pull request when this group matches.
 # labels = ["core-impact", "high-priority"]
 
+[scanner.triage]
+# When enabled is true, bofa triage pr scans changed files and applies the
+# configured labels for every matching group. Defaults to false.
+enabled = true
+# When post_comment is true, a triage summary comment is posted on the pull
+# request. Labels are applied regardless of this setting. Defaults to false.
+post_comment = false
+
+[scanner.triage.groups.example]
+description = "Example triage group"
+paths = ["src/**", "tests/**"]
+# Labels are required for triage groups and are applied when the group matches.
+labels = ["needs-review", "triage-example"]
+
 # Template overrides.
 # The report template is rendered when the sensitive scanner finds matching files
 # in a pull request. It receives a `findings` list; each finding has `name`,

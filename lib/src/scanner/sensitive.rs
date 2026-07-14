@@ -1,13 +1,7 @@
 use crate::config::scanner::sensitive::SensitiveScannerConfig;
 use crate::git::ChangedFile;
-use glob::{MatchOptions, Pattern};
+use glob::Pattern;
 use serde::Serialize;
-
-const MATCH_OPTIONS: MatchOptions = MatchOptions {
-    case_sensitive: true,
-    require_literal_separator: true,
-    require_literal_leading_dot: false,
-};
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SensitiveFinding {
@@ -44,8 +38,7 @@ impl SensitiveScanner {
         for (name, item) in &config.groups {
             let mut patterns = Vec::new();
             for path in &item.paths {
-                let pattern = Pattern::new(path)
-                    .map_err(|err| Error::InvalidGlob(format!("{}: {}", path, err)))?;
+                let pattern = super::compile_glob(path).map_err(Error::InvalidGlob)?;
                 patterns.push(pattern);
             }
             items.push(CompiledItem {
@@ -62,15 +55,7 @@ impl SensitiveScanner {
     pub fn scan(&self, files: &[ChangedFile]) -> Vec<SensitiveFinding> {
         let mut findings = Vec::new();
         for item in &self.items {
-            let matched: Vec<String> = files
-                .iter()
-                .filter(|file| {
-                    item.patterns
-                        .iter()
-                        .any(|pattern| pattern.matches_with(&file.path, MATCH_OPTIONS))
-                })
-                .map(|file| file.path.clone())
-                .collect();
+            let matched = super::matching_paths(files, &item.patterns);
             if !matched.is_empty() {
                 findings.push(SensitiveFinding {
                     name: item.name.clone(),
