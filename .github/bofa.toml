@@ -14,6 +14,9 @@ key_type = "PEM"
 key = "$APP_SECRET_PEM"
 installation_id = "$APP_INSTALLATION_ID"
 
+[scanner]
+ignore = [ "chore: release*" ]
+
 [scanner.triage]
 enabled = false
 
