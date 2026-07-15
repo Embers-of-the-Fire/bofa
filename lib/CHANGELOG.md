@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/Embers-of-the-Fire/bofa/compare/bofa-lib-v0.2.0...bofa-lib-v0.3.0) - 2026-07-15
+
+### Added
+
+- *(scanner)* add ignore glob patterns for PR titles ([#6](https://github.com/Embers-of-the-Fire/bofa/pull/6))
+
 ## [0.2.0](https://github.com/Embers-of-the-Fire/bofa/compare/bofa-lib-v0.1.0...bofa-lib-v0.2.0) - 2026-07-14
 
 ### Added
