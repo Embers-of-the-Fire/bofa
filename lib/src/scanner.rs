@@ -12,7 +12,12 @@ const MATCH_OPTIONS: MatchOptions = MatchOptions {
 
 const TITLE_MATCH_OPTIONS: MatchOptions = MatchOptions {
     case_sensitive: false,
-    require_literal_separator: true,
+    // Pull request titles are not file paths, so / should not be treated as a
+    // directory separator. With `require_literal_separator: true`, a wildcard like
+    // * would fail to match a title containing a slash (e.g., `ignore = ["WIP:*"]`
+    // won't match "WIP: refactor auth/login"). Setting this to false ensures
+    // wildcards match any character in the title.
+    require_literal_separator: false,
     require_literal_leading_dot: false,
 };
 
@@ -71,6 +76,12 @@ mod tests {
         assert!(title_ignored("Dependabot update", &patterns));
         assert!(title_ignored("draft: work in progress", &patterns));
         assert!(!title_ignored("feat: add feature", &patterns));
+    }
+
+    #[test]
+    fn title_matches_wildcard_across_slashes() {
+        let patterns = compile(&["WIP:*"]);
+        assert!(title_ignored("WIP: refactor auth/login", &patterns));
     }
 
     #[test]
